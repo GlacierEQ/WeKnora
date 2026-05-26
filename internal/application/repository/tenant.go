@@ -3,10 +3,12 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/Tencent/WeKnora/internal/utils"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -32,7 +34,7 @@ func (r *tenantRepository) CreateTenant(ctx context.Context, tenant *types.Tenan
 }
 
 // GetTenantByID gets tenant by ID
-func (r *tenantRepository) GetTenantByID(ctx context.Context, id uint) (*types.Tenant, error) {
+func (r *tenantRepository) GetTenantByID(ctx context.Context, id uint64) (*types.Tenant, error) {
 	var tenant types.Tenant
 	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&tenant).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -41,6 +43,27 @@ func (r *tenantRepository) GetTenantByID(ctx context.Context, id uint) (*types.T
 		return nil, err
 	}
 	return &tenant, nil
+}
+
+// GetTenantsByIDs batches GetTenantByID with a single IN-list query.
+// Returns a map keyed by tenant ID; missing rows are simply absent from
+// the map (no error). An empty input slice short-circuits to an empty map
+// without hitting the database.
+func (r *tenantRepository) GetTenantsByIDs(ctx context.Context, ids []uint64) (map[uint64]*types.Tenant, error) {
+	if len(ids) == 0 {
+		return map[uint64]*types.Tenant{}, nil
+	}
+	var tenants []*types.Tenant
+	if err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&tenants).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint64]*types.Tenant, len(tenants))
+	for _, t := range tenants {
+		if t != nil {
+			out[t.ID] = t
+		}
+	}
+	return out, nil
 }
 
 // ListTenants lists all tenants
@@ -52,17 +75,76 @@ func (r *tenantRepository) ListTenants(ctx context.Context) ([]*types.Tenant, er
 	return tenants, nil
 }
 
-// UpdateTenant updates tenant
+// SearchTenants searches tenants with pagination and filters
+func (r *tenantRepository) SearchTenants(ctx context.Context, keyword string, tenantID uint64, page, pageSize int) ([]*types.Tenant, int64, error) {
+	var tenants []*types.Tenant
+	var total int64
+
+	query := r.db.WithContext(ctx).Model(&types.Tenant{})
+
+	// Build search conditions
+	if tenantID > 0 && keyword != "" {
+		escaped := escapeLikeKeyword(keyword)
+		query = query.Where("id = ? OR name LIKE ? OR description LIKE ?", tenantID, "%"+escaped+"%", "%"+escaped+"%")
+	} else if tenantID > 0 {
+		query = query.Where("id = ?", tenantID)
+	} else if keyword != "" {
+		escaped := escapeLikeKeyword(keyword)
+		query = query.Where("name LIKE ? OR description LIKE ?", "%"+escaped+"%", "%"+escaped+"%")
+	}
+
+	// Count total
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Apply pagination
+	if page > 0 && pageSize > 0 {
+		offset := (page - 1) * pageSize
+		query = query.Offset(offset).Limit(pageSize)
+	}
+
+	// Order by created_at DESC
+	query = query.Order("created_at DESC")
+
+	// Execute query
+	if err := query.Find(&tenants).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return tenants, total, nil
+}
+
+// UpdateTenant updates tenant.
+// Handles api_key carefully because db.Updates() does not trigger the BeforeSave
+// GORM hook. Without this guard, AfterFind-decrypted plaintext would silently
+// overwrite the encrypted value in the database.
+//
+// Strategy:
+//   - enc:v1:… (pre-encrypted by CreateTenant / UpdateAPIKey): write as-is.
+//   - plaintext (decrypted by AfterFind): blank it so GORM skips the column.
+//   - SYSTEM_AES_KEY not set: write as-is (encryption disabled).
+//
+// The caller's in-memory struct is always restored after the write.
 func (r *tenantRepository) UpdateTenant(ctx context.Context, tenant *types.Tenant) error {
-	return r.db.WithContext(ctx).Model(&types.Tenant{}).Where("id = ?", tenant.ID).Updates(tenant).Error
+	origAPIKey := tenant.APIKey
+	if key := utils.GetAESKey(); key != nil && tenant.APIKey != "" &&
+		!strings.HasPrefix(tenant.APIKey, utils.EncPrefix) {
+		// Plaintext from AfterFind — do not write back; let the DB keep its
+		// existing encrypted value untouched.
+		tenant.APIKey = ""
+	}
+	err := r.db.WithContext(ctx).Model(&types.Tenant{}).Where("id = ?", tenant.ID).Updates(tenant).Error
+	tenant.APIKey = origAPIKey
+	return err
 }
 
 // DeleteTenant deletes tenant
-func (r *tenantRepository) DeleteTenant(ctx context.Context, id uint) error {
+func (r *tenantRepository) DeleteTenant(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Where("id = ?", id).Delete(&types.Tenant{}).Error
 }
 
-func (r *tenantRepository) AdjustStorageUsed(ctx context.Context, tenantID uint, delta int64) error {
+func (r *tenantRepository) AdjustStorageUsed(ctx context.Context, tenantID uint64, delta int64) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var tenant types.Tenant
 		// 使用悲观锁确保并发安全
@@ -73,7 +155,7 @@ func (r *tenantRepository) AdjustStorageUsed(ctx context.Context, tenantID uint,
 		tenant.StorageUsed += delta
 		// 保存更新并验证业务规则
 		if tenant.StorageUsed < 0 {
-			logger.Error(ctx, "tenant storage used is negative %s: %d", tenant.ID, tenant.StorageUsed)
+			logger.Errorf(ctx, "tenant storage used is negative %d: %d", tenant.ID, tenant.StorageUsed)
 			tenant.StorageUsed = 0
 		}
 

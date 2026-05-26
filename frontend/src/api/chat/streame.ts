@@ -1,22 +1,10 @@
-import { fetchEventSource } from '@microsoft/fetch-event-source'
-import { ref, type Ref, onUnmounted, nextTick } from 'vue'
+import { fetchEventSource } from '@microsoft/fetch-event-source';
+import { ref, onUnmounted } from 'vue';
 import { generateRandomString } from '@/utils/index';
-import { getTestData } from '@/utils/request';
-import { loadTestData } from '@/api/test-data';
+import i18n from '@/i18n';
+import { getApiBaseUrl } from '@/utils/api-base';
 
-// 从localStorage获取设置
-function getSettings() {
-  const settingsStr = localStorage.getItem("WeKnora_settings");
-  if (settingsStr) {
-    try {
-      const settings = JSON.parse(settingsStr);
-      return settings;
-    } catch (e) {
-      console.error("解析设置失败:", e);
-    }
-  }
-  return null;
-}
+
 
 interface StreamOptions {
   // 请求方法 (默认POST)
@@ -42,69 +30,145 @@ export function useStream() {
   let renderTimer: number | null = null
 
   // 启动流式请求
-  const startStream = async (params: { session_id: any; query: any; method: string; url: string }) => {
+  const startStream = async (params: { session_id: any; query: any; knowledge_base_ids?: string[]; knowledge_ids?: string[]; agent_enabled?: boolean; agent_id?: string; web_search_enabled?: boolean; enable_memory?: boolean; summary_model_id?: string; mcp_service_ids?: string[]; mentioned_items?: Array<{id: string; name: string; type: string; kb_type?: string}>; images?: Array<{data: string}>; attachment_uploads?: Array<{data: string; file_name: string; file_size: number}>; method: string; url: string }) => {
     // 重置状态
     output.value = '';
     error.value = null;
     isStreaming.value = true;
     isLoading.value = true;
 
-    // 获取设置信息
-    const settings = getSettings();
-    let apiUrl = '';
-    let apiKey = '';
-
-    // 如果有设置信息，优先使用设置信息
-    if (settings && settings.endpoint && settings.apiKey) {
-      apiUrl = settings.endpoint;
-      apiKey = settings.apiKey;
-    } else {
-      // 否则加载测试数据
-      await loadTestData();
-      const testData = getTestData();
-      if (!testData) {
-        error.value = "测试数据未初始化，无法进行聊天";
-        stopStream();
-        return;
-      }
-      apiUrl = import.meta.env.VITE_IS_DOCKER ? "" : "http://localhost:8080";
-      apiKey = testData.tenant.api_key;
+    // 获取API配置
+    const apiUrl = getApiBaseUrl();
+    
+    // 获取JWT Token
+    const token = localStorage.getItem('weknora_token');
+    if (!token) {
+      error.value = i18n.global.t('error.tokenNotFound');
+      stopStream();
+      return;
     }
+
+    // 跨租户访问请求头：只要 setSelectedTenant 写过激活租户，就附
+    // X-Tenant-ID。早期版本会 short-circuit "selectedTenantId ===
+    // defaultTenantId 时不附" 来减少 header 体积，但任何把 weknora_tenant
+    // 写成激活租户的代码（OIDC 同步 / UserMenu loadUserInfo / router
+    // hydrate）都会让两者相等，使得后续流式请求悄悄丢 header、落到
+    // home 租户上，导致 SSE 接口返回 404。直接附即可——后端
+    // IsTenantAccessible 也允许 header 指向自家租户。
+    const selectedTenantId = localStorage.getItem('weknora_selected_tenant_id');
+    const tenantIdHeader: string | null = selectedTenantId || null;
+
+    // Validate knowledge_base_ids for agent-chat requests
+    // Note: knowledge_base_ids can be empty if user hasn't selected any, but we allow it
+    // The backend will handle the case when no knowledge bases are selected
+    const isAgentChat = params.url === '/api/v1/agent-chat';
+    // Removed validation - allow empty knowledge_base_ids array
+    // The backend should handle this case appropriately
+
+    // TTFB instrumentation: record the moment we kick off the request so
+    // we can compare it with the first answer chunk we receive from the
+    // server. This makes it possible to correlate the frontend-observed
+    // latency with the backend "TTFB:first_answer_chunk" log line by
+    // matching on X-Request-ID.
+    const sentAt = performance.now();
+    const requestID = generateRandomString(12);
+    let firstAnswerLogged = false;
 
     try {
       let url =
         params.method == "POST"
           ? `${apiUrl}${params.url}/${params.session_id}`
           : `${apiUrl}${params.url}/${params.session_id}?message_id=${params.query}`;
+      console.log(`[TTFB] request:start request_id=${requestID} url=${url} sent_at=${Date.now()}`);
+      
+      // Prepare POST body with required fields for agent-chat
+      // knowledge_base_ids array and agent_enabled can update Session's SessionAgentConfig
+      const postBody: any = { 
+        query: params.query,
+        agent_enabled: params.agent_enabled !== undefined ? params.agent_enabled : true
+      };
+      // Always include knowledge_base_ids for agent-chat (already validated above)
+      if (params.knowledge_base_ids !== undefined && params.knowledge_base_ids.length > 0) {
+        postBody.knowledge_base_ids = params.knowledge_base_ids;
+      }
+      // Include knowledge_ids if provided
+      if (params.knowledge_ids !== undefined && params.knowledge_ids.length > 0) {
+        postBody.knowledge_ids = params.knowledge_ids;
+      }
+      // Include agent_id if provided (backend resolves shared agent and tenant from share relation)
+      if (params.agent_id) {
+        postBody.agent_id = params.agent_id;
+      }
+      // Include web_search_enabled if provided
+      if (params.web_search_enabled !== undefined) {
+        postBody.web_search_enabled = params.web_search_enabled;
+      }
+      // Include enable_memory if provided
+      if (params.enable_memory !== undefined) {
+        postBody.enable_memory = params.enable_memory;
+      }
+      // Include summary_model_id if provided (for non-Agent mode)
+      if (params.summary_model_id) {
+        postBody.summary_model_id = params.summary_model_id;
+      }
+      // Include mcp_service_ids if provided (for Agent mode)
+      if (params.mcp_service_ids !== undefined && params.mcp_service_ids.length > 0) {
+        postBody.mcp_service_ids = params.mcp_service_ids;
+      }
+      // Include mentioned_items if provided (for displaying @mentions in chat)
+      if (params.mentioned_items !== undefined && params.mentioned_items.length > 0) {
+        postBody.mentioned_items = params.mentioned_items;
+      }
+      // Include images if provided (base64 data URIs for multimodal chat)
+      if (params.images !== undefined && params.images.length > 0) {
+        postBody.images = params.images;
+      }
+      // Include attachment_uploads if provided (documents, audio, etc.)
+      if (params.attachment_uploads !== undefined && params.attachment_uploads.length > 0) {
+        postBody.attachment_uploads = params.attachment_uploads;
+      }
+      postBody.channel = "web";
+      
       await fetchEventSource(url, {
         method: params.method,
         headers: {
           "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-          "X-Request-ID": `${generateRandomString(12)}`,
+          "Authorization": `Bearer ${token}`,
+          "Accept-Language": i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',
+          "X-Request-ID": requestID,
+          ...(tenantIdHeader ? { "X-Tenant-ID": tenantIdHeader } : {}),
         },
         body:
           params.method == "POST"
-            ? JSON.stringify({ query: params.query })
+            ? JSON.stringify(postBody)
             : null,
         signal: controller.signal,
         openWhenHidden: true,
 
         onopen: async (res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          console.log(`[TTFB] response:headers request_id=${requestID} elapsed_ms=${(performance.now() - sentAt).toFixed(1)}`);
           isLoading.value = false;
         },
 
         onmessage: (ev) => {
-          buffer.push(JSON.parse(ev.data)); // 数据存入缓冲
+          const parsed = JSON.parse(ev.data);
+          // Log first answer chunk for end-to-end TTFB measurement.
+          // Filter by event type so non-answer events (references, tool
+          // calls, etc.) don't count as the "first token" arrival.
+          if (!firstAnswerLogged && (parsed?.response_type === 'answer' || parsed?.type === 'answer')) {
+            firstAnswerLogged = true;
+            console.log(`[TTFB] response:first_answer request_id=${requestID} elapsed_ms=${(performance.now() - sentAt).toFixed(1)}`);
+          }
+          buffer.push(parsed); // 数据存入缓冲
           // 执行自定义处理
           if (chunkHandler) {
-            chunkHandler(JSON.parse(ev.data));
+            chunkHandler(parsed);
           }
         },
 
         onerror: (err) => {
-          throw new Error(`流式连接失败: ${err}`);
+          throw new Error(`${i18n.global.t('error.streamFailed')}: ${err}`);
         },
 
         onclose: () => {

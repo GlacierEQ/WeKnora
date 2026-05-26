@@ -31,7 +31,9 @@ type RetrieveEngineRepository interface {
 	EstimateStorageSize(ctx context.Context, indexInfoList []*types.IndexInfo, params map[string]any) int64
 
 	// DeleteByChunkIDList deletes the index info by chunk id list
-	DeleteByChunkIDList(ctx context.Context, indexIDList []string, dimension int) error
+	DeleteByChunkIDList(ctx context.Context, indexIDList []string, dimension int, knowledgeType string) error
+	// DeleteBySourceIDList deletes the index info by source id list
+	DeleteBySourceIDList(ctx context.Context, sourceIDList []string, dimension int, knowledgeType string) error
 	// 复制索引数据
 	// sourceKnowledgeBaseID: 源知识库ID
 	// sourceToTargetChunkIDMap: 源分块ID到目标分块ID的映射关系
@@ -44,10 +46,19 @@ type RetrieveEngineRepository interface {
 		sourceToTargetChunkIDMap map[string]string,
 		targetKnowledgeBaseID string,
 		dimension int,
+		knowledgeType string,
 	) error
 
 	// DeleteByKnowledgeIDList deletes the index info by knowledge id list
-	DeleteByKnowledgeIDList(ctx context.Context, knowledgeIDList []string, dimension int) error
+	DeleteByKnowledgeIDList(ctx context.Context, knowledgeIDList []string, dimension int, knowledgeType string) error
+
+	// BatchUpdateChunkEnabledStatus updates the enabled status of chunks in batch
+	// chunkStatusMap: map of chunk ID to enabled status (true = enabled, false = disabled)
+	BatchUpdateChunkEnabledStatus(ctx context.Context, chunkStatusMap map[string]bool) error
+
+	// BatchUpdateChunkTagID updates the tag ID of chunks in batch
+	// chunkTagMap: map of chunk ID to tag ID (empty string means no tag)
+	BatchUpdateChunkTagID(ctx context.Context, chunkTagMap map[string]string) error
 
 	// RetrieveEngine retrieves the engine
 	RetrieveEngine
@@ -61,6 +72,15 @@ type RetrieveEngineRegistry interface {
 	GetRetrieveEngineService(engineType types.RetrieverEngineType) (RetrieveEngineService, error)
 	// GetAllRetrieveEngineServices gets all retrieve engine services
 	GetAllRetrieveEngineServices() []RetrieveEngineService
+
+	// GetByStoreID returns the engine service registered for a specific DB store ID.
+	//
+	// IMPORTANT: This method does NOT verify tenant ownership of the returned
+	// store. Callers MUST use the CreateRetrieveEngineForKB /
+	// CreateRetrieveEngineFromPayload factory functions in the retriever package
+	// rather than calling this directly. The factories wrap GetByStoreID with
+	// tenant ownership verification (defense-in-depth against cross-tenant IDOR).
+	GetByStoreID(storeID string) (RetrieveEngineService, error)
 }
 
 // RetrieveEngineService defines the retrieve engine service interface
@@ -96,13 +116,25 @@ type RetrieveEngineService interface {
 		sourceToTargetChunkIDMap map[string]string,
 		targetKnowledgeBaseID string,
 		dimension int,
+		knowledgeType string,
 	) error
 
 	// DeleteByChunkIDList deletes the index info by chunk id list
-	DeleteByChunkIDList(ctx context.Context, indexIDList []string, dimension int) error
+	DeleteByChunkIDList(ctx context.Context, indexIDList []string, dimension int, knowledgeType string) error
+
+	// DeleteBySourceIDList deletes the index info by source id list
+	DeleteBySourceIDList(ctx context.Context, sourceIDList []string, dimension int, knowledgeType string) error
 
 	// DeleteByKnowledgeIDList deletes the index info by knowledge id list
-	DeleteByKnowledgeIDList(ctx context.Context, knowledgeIDList []string, dimension int) error
+	DeleteByKnowledgeIDList(ctx context.Context, knowledgeIDList []string, dimension int, knowledgeType string) error
+
+	// BatchUpdateChunkEnabledStatus updates the enabled status of chunks in batch
+	// chunkStatusMap: map of chunk ID to enabled status (true = enabled, false = disabled)
+	BatchUpdateChunkEnabledStatus(ctx context.Context, chunkStatusMap map[string]bool) error
+
+	// BatchUpdateChunkTagID updates the tag ID of chunks in batch
+	// chunkTagMap: map of chunk ID to tag ID (empty string means no tag)
+	BatchUpdateChunkTagID(ctx context.Context, chunkTagMap map[string]string) error
 
 	// RetrieveEngine retrieves the engine
 	RetrieveEngine

@@ -6,8 +6,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -24,23 +27,27 @@ type RetrieverEngineParams struct {
 
 // Tenant represents tenant information in the system
 type Tenant struct {
-	ID uint `yaml:"id" json:"id" gorm:"primaryKey"`
+	ID uint64 `yaml:"id"                json:"id"                gorm:"primaryKey"`
 	// Tenant name
-	Name string `yaml:"name" json:"name"`
+	Name string `yaml:"name"              json:"name"`
 	// Tenant description
-	Description string `yaml:"description" json:"description"`
+	Description string `yaml:"description"       json:"description"`
 	// API key for authentication
-	APIKey string `yaml:"api_key" json:"api_key"`
+	APIKey string `yaml:"api_key"           json:"api_key"`
 	// Tenant status (active, inactive)
-	Status string `yaml:"status" json:"status" gorm:"default:'active'"`
+	Status string `yaml:"status"            json:"status"            gorm:"default:'active'"`
 	// Configured retrieval engines
 	RetrieverEngines RetrieverEngines `yaml:"retriever_engines" json:"retriever_engines" gorm:"type:json"`
 	// Business/department information
-	Business string `yaml:"business" json:"business"`
+	Business string `yaml:"business"          json:"business"`
+	// Storage quota (Bytes), default is 10GB
+	StorageQuota int64 `yaml:"storage_quota"     json:"storage_quota"     gorm:"default:10737418240"`
+	// Storage used (Bytes)
+	StorageUsed int64 `yaml:"storage_used"      json:"storage_used"      gorm:"default:0"`
 	// Creation timestamp
-	CreatedAt time.Time `yaml:"created_at" json:"created_at"`
+	CreatedAt time.Time `yaml:"created_at"        json:"created_at"`
 	// Last update timestamp
-	UpdatedAt time.Time `yaml:"updated_at" json:"updated_at"`
+	UpdatedAt time.Time `yaml:"updated_at"        json:"updated_at"`
 }
 
 // TenantResponse represents the API response structure for tenant operations
@@ -73,7 +80,7 @@ func (c *Client) CreateTenant(ctx context.Context, tenant *Tenant) (*Tenant, err
 }
 
 // GetTenant retrieves a tenant by ID
-func (c *Client) GetTenant(ctx context.Context, tenantID uint) (*Tenant, error) {
+func (c *Client) GetTenant(ctx context.Context, tenantID uint64) (*Tenant, error) {
 	path := fmt.Sprintf("/api/v1/tenants/%d", tenantID)
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil, nil)
 	if err != nil {
@@ -105,7 +112,7 @@ func (c *Client) UpdateTenant(ctx context.Context, tenant *Tenant) (*Tenant, err
 }
 
 // DeleteTenant removes a tenant by ID
-func (c *Client) DeleteTenant(ctx context.Context, tenantID uint) error {
+func (c *Client) DeleteTenant(ctx context.Context, tenantID uint64) error {
 	path := fmt.Sprintf("/api/v1/tenants/%d", tenantID)
 	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 	if err != nil {
@@ -133,4 +140,91 @@ func (c *Client) ListTenants(ctx context.Context) ([]Tenant, error) {
 	}
 
 	return response.Data.Items, nil
+}
+
+// ListAllTenants retrieves all tenants in the system (requires cross-tenant access)
+func (c *Client) ListAllTenants(ctx context.Context) ([]Tenant, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/api/v1/tenants/all", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response TenantListResponse
+	if err := parseResponse(resp, &response); err != nil {
+		return nil, err
+	}
+
+	return response.Data.Items, nil
+}
+
+// TenantSearchResponse represents the API response for searching tenants
+type TenantSearchResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Items    []Tenant `json:"items"`
+		Total    int64    `json:"total"`
+		Page     int      `json:"page"`
+		PageSize int      `json:"page_size"`
+	} `json:"data"`
+}
+
+// SearchTenants searches tenants with pagination (requires cross-tenant access)
+func (c *Client) SearchTenants(ctx context.Context, keyword string, tenantID uint64, page, pageSize int) ([]Tenant, int64, error) {
+	queryParams := url.Values{}
+	if keyword != "" {
+		queryParams.Set("keyword", keyword)
+	}
+	if tenantID > 0 {
+		queryParams.Set("tenant_id", strconv.FormatUint(tenantID, 10))
+	}
+	queryParams.Set("page", strconv.Itoa(page))
+	queryParams.Set("page_size", strconv.Itoa(pageSize))
+
+	resp, err := c.doRequest(ctx, http.MethodGet, "/api/v1/tenants/search", nil, queryParams)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var response TenantSearchResponse
+	if err := parseResponse(resp, &response); err != nil {
+		return nil, 0, err
+	}
+
+	return response.Data.Items, response.Data.Total, nil
+}
+
+// GetTenantKV retrieves a tenant KV configuration by key
+func (c *Client) GetTenantKV(ctx context.Context, key string) (json.RawMessage, error) {
+	path := fmt.Sprintf("/api/v1/tenants/kv/%s", key)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := parseResponse(resp, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+// UpdateTenantKV updates a tenant KV configuration by key
+func (c *Client) UpdateTenantKV(ctx context.Context, key string, value any) (json.RawMessage, error) {
+	path := fmt.Sprintf("/api/v1/tenants/kv/%s", key)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, value, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := parseResponse(resp, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
 }

@@ -26,6 +26,7 @@ show_help() {
     echo "  -p, --app      仅构建应用镜像"
     echo "  -d, --docreader 仅构建文档读取器镜像"
     echo "  -f, --frontend 仅构建前端镜像"
+    echo "  -s, --sandbox  仅构建沙箱镜像"
     echo "  -c, --clean    清理所有本地镜像"
     echo "  -v, --version  显示版本信息"
     exit 0
@@ -78,13 +79,49 @@ check_platform() {
     log_info "检测系统平台信息..."
     if [ "$(uname -m)" = "x86_64" ]; then
         export PLATFORM="linux/amd64"
+        export TARGETARCH="amd64"
     elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
         export PLATFORM="linux/arm64"
+        export TARGETARCH="arm64"
     else
         log_warning "未识别的平台类型：$(uname -m)，将使用默认平台 linux/amd64"
         export PLATFORM="linux/amd64"
+        export TARGETARCH="amd64"
     fi
     log_info "当前平台：$PLATFORM"
+    log_info "当前架构：$TARGETARCH"
+}
+
+# 获取版本信息
+get_version_info() {
+    # 从VERSION文件获取版本号
+    if [ -f "VERSION" ]; then
+        VERSION=$(cat VERSION | tr -d '\n\r')
+    else
+        VERSION="unknown"
+    fi
+    
+    # 获取commit ID
+    if command -v git >/dev/null 2>&1; then
+        COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    else
+        COMMIT_ID="unknown"
+    fi
+    
+    # 获取构建时间
+    BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+    
+    # 获取Go版本
+    if command -v go >/dev/null 2>&1; then
+        GO_VERSION=$(go version 2>/dev/null || echo "unknown")
+    else
+        GO_VERSION="unknown"
+    fi
+    
+    log_info "版本信息: $VERSION"
+    log_info "Commit ID: $COMMIT_ID"
+    log_info "构建时间: $BUILD_TIME"
+    log_info "Go版本: $GO_VERSION"
 }
 
 # 构建应用镜像
@@ -93,11 +130,18 @@ build_app_image() {
     
     cd "$PROJECT_ROOT"
     
+    # 获取版本信息
+    get_version_info
+    
     docker build \
         --platform $PLATFORM \
         --build-arg GOPRIVATE_ARG=${GOPRIVATE:-""} \
         --build-arg GOPROXY_ARG=${GOPROXY:-"https://goproxy.cn,direct"} \
         --build-arg GOSUMDB_ARG=${GOSUMDB:-"off"} \
+        --build-arg VERSION_ARG="$VERSION" \
+        --build-arg COMMIT_ID_ARG="$COMMIT_ID" \
+        --build-arg BUILD_TIME_ARG="$BUILD_TIME" \
+        --build-arg GO_VERSION_ARG="$GO_VERSION" \
         -f docker/Dockerfile.app \
         -t wechatopenai/weknora-app:latest \
         .
@@ -120,6 +164,8 @@ build_docreader_image() {
     docker build \
         --platform $PLATFORM \
         --build-arg PLATFORM=$PLATFORM \
+        --build-arg TARGETARCH=$TARGETARCH \
+        --build-arg APT_MIRROR=${APT_MIRROR:-} \
         -f docker/Dockerfile.docreader \
         -t wechatopenai/weknora-docreader:latest \
         .
@@ -154,26 +200,52 @@ build_frontend_image() {
     fi
 }
 
+# 构建沙箱镜像
+build_sandbox_image() {
+    log_info "构建沙箱镜像 (weknora-sandbox)..."
+
+    cd "$PROJECT_ROOT"
+
+    docker build \
+        --platform $PLATFORM \
+        -f docker/Dockerfile.sandbox \
+        -t wechatopenai/weknora-sandbox:latest \
+        .
+
+    if [ $? -eq 0 ]; then
+        log_success "沙箱镜像构建成功"
+        return 0
+    else
+        log_error "沙箱镜像构建失败"
+        return 1
+    fi
+}
+
 # 构建所有镜像
 build_all_images() {
     log_info "开始构建所有镜像..."
-    
+
     local app_result=0
     local docreader_result=0
     local frontend_result=0
-    
+    local sandbox_result=0
+
     # 构建应用镜像
     build_app_image
     app_result=$?
-    
+
     # 构建文档读取器镜像
     build_docreader_image
     docreader_result=$?
-    
+
     # 构建前端镜像
     build_frontend_image
     frontend_result=$?
-    
+
+    # 构建沙箱镜像
+    build_sandbox_image
+    sandbox_result=$?
+
     # 显示构建结果
     echo ""
     log_info "=== 构建结果 ==="
@@ -182,20 +254,26 @@ build_all_images() {
     else
         log_error "✗ 应用镜像构建失败"
     fi
-    
+
     if [ $docreader_result -eq 0 ]; then
         log_success "✓ 文档读取器镜像构建成功"
     else
         log_error "✗ 文档读取器镜像构建失败"
     fi
-    
+
     if [ $frontend_result -eq 0 ]; then
         log_success "✓ 前端镜像构建成功"
     else
         log_error "✗ 前端镜像构建失败"
     fi
-    
-    if [ $app_result -eq 0 ] && [ $docreader_result -eq 0 ] && [ $frontend_result -eq 0 ]; then
+
+    if [ $sandbox_result -eq 0 ]; then
+        log_success "✓ 沙箱镜像构建成功"
+    else
+        log_error "✗ 沙箱镜像构建失败"
+    fi
+
+    if [ $app_result -eq 0 ] && [ $docreader_result -eq 0 ] && [ $frontend_result -eq 0 ] && [ $sandbox_result -eq 0 ]; then
         log_success "所有镜像构建完成！"
         return 0
     else
@@ -225,6 +303,7 @@ clean_images() {
     docker rmi wechatopenai/weknora-app:latest 2>/dev/null || true
     docker rmi wechatopenai/weknora-docreader:latest 2>/dev/null || true
     docker rmi wechatopenai/weknora-ui:latest 2>/dev/null || true
+    docker rmi wechatopenai/weknora-sandbox:latest 2>/dev/null || true
     
     docker image prune -f
     
@@ -237,6 +316,7 @@ BUILD_ALL=false
 BUILD_APP=false
 BUILD_DOCREADER=false
 BUILD_FRONTEND=false
+BUILD_SANDBOX=false
 CLEAN_IMAGES=false
 
 # 没有参数时默认构建所有镜像
@@ -255,6 +335,8 @@ while [ "$1" != "" ]; do
         -d | --docreader )  BUILD_DOCREADER=true
                             ;;
         -f | --frontend )   BUILD_FRONTEND=true
+                            ;;
+        -s | --sandbox )    BUILD_SANDBOX=true
                             ;;
         -c | --clean )      CLEAN_IMAGES=true
                             ;;
@@ -303,4 +385,9 @@ if [ "$BUILD_FRONTEND" = true ]; then
     exit $?
 fi
 
-exit 0 
+if [ "$BUILD_SANDBOX" = true ]; then
+    build_sandbox_image
+    exit $?
+fi
+
+exit 0

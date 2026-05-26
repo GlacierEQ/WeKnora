@@ -2,28 +2,51 @@ package service
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
+	"fmt"
 	"strings"
 
-	chatpipline "github.com/Tencent/WeKnora/internal/application/service/chat_pipline"
 	"github.com/Tencent/WeKnora/internal/config"
+	apperrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
-	"github.com/Tencent/WeKnora/internal/tracing"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
+	"github.com/google/uuid"
+
+	chatpipeline "github.com/Tencent/WeKnora/internal/application/service/chat_pipeline"
 )
 
-// sessionService implements the SessionService interface for managing conversation sessions
+func sessionUserIDFromContext(ctx context.Context) string {
+	userID, _ := types.UserIDFromContext(ctx)
+	return userID
+}
+
+// generateEventID generates a unique event ID with type suffix for better traceability
+func generateEventID(suffix string) string {
+	return fmt.Sprintf("%s-%s", uuid.New().String()[:8], suffix)
+}
+
+// sessionService implements the SessionService interface for managing conversation sessions.
+// History for multi-turn conversations is rebuilt from the messages table on demand
+// (see service.LoadAgentHistory and chat_pipeline history loading) — there is no
+// separate cross-turn cache layer.
 type sessionService struct {
-	cfg                  *config.Config                  // Application configuration
-	sessionRepo          interfaces.SessionRepository    // Repository for session data
-	messageRepo          interfaces.MessageRepository    // Repository for message data
-	knowledgeBaseService interfaces.KnowledgeBaseService // Service for knowledge base operations
-	modelService         interfaces.ModelService         // Service for model operations
-	eventManager         *chatpipline.EventManager       // Event manager for chat pipeline
+	cfg                   *config.Config                         // Application configuration
+	sessionRepo           interfaces.SessionRepository           // Repository for session data
+	messageRepo           interfaces.MessageRepository           // Repository for message data
+	knowledgeBaseService  interfaces.KnowledgeBaseService        // Service for knowledge base operations
+	modelService          interfaces.ModelService                // Service for model operations
+	tenantService         interfaces.TenantService               // Service for tenant operations
+	eventManager          *chatpipeline.EventManager             // Event manager for chat pipeline
+	agentService          interfaces.AgentService                // Service for agent operations
+	knowledgeService      interfaces.KnowledgeService            // Service for knowledge operations
+	chunkService          interfaces.ChunkService                // Service for chunk operations
+	webSearchStateRepo    interfaces.WebSearchStateService       // Service for web search state
+	webSearchProviderRepo interfaces.WebSearchProviderRepository // Repository for web search provider entities
+	kbShareService        interfaces.KBShareService              // Service for KB sharing operations
+	memoryService         interfaces.MemoryService               // Service for memory operations
 }
 
 // NewSessionService creates a new session service instance with all required dependencies
@@ -31,16 +54,32 @@ func NewSessionService(cfg *config.Config,
 	sessionRepo interfaces.SessionRepository,
 	messageRepo interfaces.MessageRepository,
 	knowledgeBaseService interfaces.KnowledgeBaseService,
+	knowledgeService interfaces.KnowledgeService,
+	chunkService interfaces.ChunkService,
 	modelService interfaces.ModelService,
-	eventManager *chatpipline.EventManager,
+	tenantService interfaces.TenantService,
+	eventManager *chatpipeline.EventManager,
+	agentService interfaces.AgentService,
+	webSearchStateRepo interfaces.WebSearchStateService,
+	webSearchProviderRepo interfaces.WebSearchProviderRepository,
+	kbShareService interfaces.KBShareService,
+	memoryService interfaces.MemoryService,
 ) interfaces.SessionService {
 	return &sessionService{
-		cfg:                  cfg,
-		sessionRepo:          sessionRepo,
-		messageRepo:          messageRepo,
-		knowledgeBaseService: knowledgeBaseService,
-		modelService:         modelService,
-		eventManager:         eventManager,
+		cfg:                   cfg,
+		sessionRepo:           sessionRepo,
+		messageRepo:           messageRepo,
+		knowledgeBaseService:  knowledgeBaseService,
+		knowledgeService:      knowledgeService,
+		chunkService:          chunkService,
+		modelService:          modelService,
+		tenantService:         tenantService,
+		eventManager:          eventManager,
+		agentService:          agentService,
+		webSearchStateRepo:    webSearchStateRepo,
+		webSearchProviderRepo: webSearchProviderRepo,
+		kbShareService:        kbShareService,
+		memoryService:         memoryService,
 	}
 }
 
@@ -51,11 +90,10 @@ func (s *sessionService) CreateSession(ctx context.Context, session *types.Sessi
 	// Validate tenant ID
 	if session.TenantID == 0 {
 		logger.Error(ctx, "Failed to create session: tenant ID cannot be empty")
-		return nil, errors.New("tenant ID is required")
+		return nil, stderrors.New("tenant ID is required")
 	}
 
-	logger.Infof(ctx, "Creating session, tenant ID: %d, model ID: %s, knowledge base ID: %s",
-		session.TenantID, session.SummaryModelID, session.KnowledgeBaseID)
+	logger.Infof(ctx, "Creating session, tenant ID: %d", session.TenantID)
 
 	// Create session in repository
 	createdSession, err := s.sessionRepo.Create(ctx, session)
@@ -74,15 +112,16 @@ func (s *sessionService) GetSession(ctx context.Context, id string) (*types.Sess
 	// Validate session ID
 	if id == "" {
 		logger.Error(ctx, "Failed to get session: session ID cannot be empty")
-		return nil, errors.New("session id is required")
+		return nil, stderrors.New("session id is required")
 	}
 
 	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
 	logger.Infof(ctx, "Retrieving session, ID: %s, tenant ID: %d", id, tenantID)
 
 	// Get session from repository
-	session, err := s.sessionRepo.Get(ctx, tenantID, id)
+	session, err := s.sessionRepo.Get(ctx, tenantID, userID, id)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"session_id": id,
@@ -97,14 +136,13 @@ func (s *sessionService) GetSession(ctx context.Context, id string) (*types.Sess
 
 // GetSessionsByTenant retrieves all sessions for the current tenant
 func (s *sessionService) GetSessionsByTenant(ctx context.Context) ([]*types.Session, error) {
-	logger.Info(ctx, "Start retrieving all sessions for tenant")
-
 	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
 	logger.Infof(ctx, "Retrieving all sessions for tenant, tenant ID: %d", tenantID)
 
 	// Get sessions from repository
-	sessions, err := s.sessionRepo.GetByTenantID(ctx, tenantID)
+	sessions, err := s.sessionRepo.GetByTenantID(ctx, tenantID, userID)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"tenant_id": tenantID,
@@ -122,15 +160,11 @@ func (s *sessionService) GetSessionsByTenant(ctx context.Context) ([]*types.Sess
 func (s *sessionService) GetPagedSessionsByTenant(ctx context.Context,
 	pagination *types.Pagination,
 ) (*types.PageResult, error) {
-	logger.Info(ctx, "Start retrieving paged sessions for tenant")
-
 	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
-	logger.Infof(ctx, "Retrieving paged sessions for tenant, tenant ID: %d, page: %d, page size: %d",
-		tenantID, pagination.Page, pagination.PageSize)
-
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
 	// Get paged sessions from repository
-	sessions, total, err := s.sessionRepo.GetPagedByTenantID(ctx, tenantID, pagination)
+	sessions, total, err := s.sessionRepo.GetPagedByTenantID(ctx, tenantID, userID, pagination)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"tenant_id": tenantID,
@@ -140,24 +174,67 @@ func (s *sessionService) GetPagedSessionsByTenant(ctx context.Context,
 		return nil, err
 	}
 
-	logger.Infof(ctx, "Tenant paged sessions retrieved successfully, tenant ID: %d, total: %d", tenantID, total)
 	return types.NewPageResult(total, pagination, sessions), nil
+}
+
+// ListSessions returns a page of sessions with search/source filters, scoped to
+// the current tenant (and user when the caller is an authenticated user).
+func (s *sessionService) ListSessions(
+	ctx context.Context, query *types.SessionListQuery,
+) (*types.PageResult, error) {
+	if query == nil {
+		query = &types.SessionListQuery{}
+	}
+	query.TenantID = types.MustTenantIDFromContext(ctx)
+	if uid, ok := types.UserIDFromContext(ctx); ok {
+		query.UserID = uid
+	}
+
+	items, total, err := s.sessionRepo.QueryPaged(ctx, query)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"tenant_id": query.TenantID,
+			"user_id":   query.UserID,
+			"keyword":   query.Keyword,
+			"source":    query.Source,
+			"agent_id":  query.AgentID,
+		})
+		return nil, err
+	}
+
+	pagination := &types.Pagination{Page: query.Page, PageSize: query.PageSize}
+	return types.NewPageResult(total, pagination, items), nil
+}
+
+// SetSessionPinned pins or unpins a session for the current user scope.
+// Returns the number of rows affected; 0 means the session doesn't exist
+// or is not owned by the caller so the handler can respond 404.
+func (s *sessionService) SetSessionPinned(
+	ctx context.Context, sessionID string, pinned bool,
+) (int64, error) {
+	if sessionID == "" {
+		return 0, stderrors.New("session id is required")
+	}
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
+	return s.sessionRepo.SetPinned(ctx, tenantID, userID, sessionID, pinned)
 }
 
 // UpdateSession updates an existing session's properties
 func (s *sessionService) UpdateSession(ctx context.Context, session *types.Session) error {
-	logger.Info(ctx, "Start updating session")
-
 	// Validate session ID
 	if session.ID == "" {
 		logger.Error(ctx, "Failed to update session: session ID cannot be empty")
-		return errors.New("session id is required")
+		return stderrors.New("session id is required")
 	}
 
-	logger.Infof(ctx, "Updating session, ID: %s, tenant ID: %d", session.ID, session.TenantID)
-
 	// Update session in repository
-	err := s.sessionRepo.Update(ctx, session)
+	userID := sessionUserIDFromContext(ctx)
+	if _, err := s.sessionRepo.Get(ctx, session.TenantID, userID, session.ID); err != nil {
+		return err
+	}
+
+	_, err := s.sessionRepo.Update(ctx, session, userID)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"session_id": session.ID,
@@ -170,22 +247,72 @@ func (s *sessionService) UpdateSession(ctx context.Context, session *types.Sessi
 	return nil
 }
 
+// UpdateSessionLastRequestState persists the input-bar state used by the most
+// recent QA request on this session. Called from the QA handler after a
+// request is accepted so the UI can rehydrate the same settings on reopen.
+// Best-effort: scope mismatches are logged and swallowed — failing to record
+// the UI memo should never fail the user's chat request.
+func (s *sessionService) UpdateSessionLastRequestState(
+	ctx context.Context, sessionID string, state *types.SessionLastRequestState,
+) error {
+	if sessionID == "" {
+		return stderrors.New("session id is required")
+	}
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
+	affected, err := s.sessionRepo.UpdateLastRequestState(ctx, tenantID, userID, sessionID, state)
+	if err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"session_id": sessionID,
+			"tenant_id":  tenantID,
+		})
+		return err
+	}
+	if affected == 0 {
+		logger.Warnf(ctx, "UpdateSessionLastRequestState: no rows affected for session %s", sessionID)
+	}
+	return nil
+}
+
 // DeleteSession removes a session by its ID
 func (s *sessionService) DeleteSession(ctx context.Context, id string) error {
-	logger.Info(ctx, "Start deleting session")
-
 	// Validate session ID
 	if id == "" {
 		logger.Error(ctx, "Failed to delete session: session ID cannot be empty")
-		return errors.New("session id is required")
+		return stderrors.New("session id is required")
 	}
 
 	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
-	logger.Infof(ctx, "Deleting session, ID: %s, tenant ID: %d", id, tenantID)
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
+
+	if _, err := s.sessionRepo.Get(ctx, tenantID, userID, id); err != nil {
+		return err
+	}
+
+	// Cleanup chat history knowledge entries for this session (async, best-effort).
+	// Use WithoutCancel so the goroutine survives after the HTTP request context is done.
+	bgCtx := context.WithoutCancel(ctx)
+	go func() {
+		knowledgeIDs, err := s.messageRepo.GetKnowledgeIDsBySessionID(bgCtx, id)
+		if err != nil {
+			logger.Warnf(bgCtx, "Failed to get knowledge IDs for session %s: %v", id, err)
+			return
+		}
+		if len(knowledgeIDs) > 0 {
+			if err := s.knowledgeService.DeleteKnowledgeList(bgCtx, knowledgeIDs); err != nil {
+				logger.Warnf(bgCtx, "Failed to delete chat history knowledge for session %s: %v", id, err)
+			}
+		}
+	}()
+
+	// Cleanup temporary KB stored in Redis for this session
+	if err := s.webSearchStateRepo.DeleteWebSearchTempKBState(ctx, id); err != nil {
+		logger.Warnf(ctx, "Failed to cleanup temporary KB for session %s: %v", id, err)
+	}
 
 	// Delete session from repository
-	err := s.sessionRepo.Delete(ctx, tenantID, id)
+	rows, err := s.sessionRepo.Delete(ctx, tenantID, userID, id)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"session_id": id,
@@ -193,56 +320,139 @@ func (s *sessionService) DeleteSession(ctx context.Context, id string) error {
 		})
 		return err
 	}
+	if rows == 0 {
+		return apperrors.ErrSessionNotFound
+	}
 
-	logger.Infof(ctx, "Session deleted successfully, ID: %s", id)
+	return nil
+}
+
+// BatchDeleteSessions deletes multiple sessions by IDs
+func (s *sessionService) BatchDeleteSessions(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		logger.Error(ctx, "Failed to batch delete sessions: IDs list is empty")
+		return stderrors.New("session ids are required")
+	}
+
+	// Get tenant ID from context
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
+
+	visibleIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, err := s.sessionRepo.Get(ctx, tenantID, userID, id); err == nil {
+			visibleIDs = append(visibleIDs, id)
+		} else if !stderrors.Is(err, apperrors.ErrSessionNotFound) {
+			return err
+		}
+	}
+	if len(visibleIDs) == 0 {
+		return apperrors.ErrSessionNotFound
+	}
+
+	// Cleanup associated resources for each session
+	bgCtx := context.WithoutCancel(ctx)
+	for _, id := range visibleIDs {
+		// Cleanup chat history knowledge entries (async, best-effort)
+		go func(sessionID string) {
+			knowledgeIDs, err := s.messageRepo.GetKnowledgeIDsBySessionID(bgCtx, sessionID)
+			if err != nil {
+				logger.Warnf(bgCtx, "Failed to get knowledge IDs for session %s: %v", sessionID, err)
+				return
+			}
+			if len(knowledgeIDs) > 0 {
+				if err := s.knowledgeService.DeleteKnowledgeList(bgCtx, knowledgeIDs); err != nil {
+					logger.Warnf(bgCtx, "Failed to delete chat history knowledge for session %s: %v", sessionID, err)
+				}
+			}
+		}(id)
+
+		if err := s.webSearchStateRepo.DeleteWebSearchTempKBState(ctx, id); err != nil {
+			logger.Warnf(ctx, "Failed to cleanup temporary KB for session %s: %v", id, err)
+		}
+	}
+
+	// Batch delete sessions from repository
+	if _, err := s.sessionRepo.BatchDelete(ctx, tenantID, userID, visibleIDs); err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"session_ids": visibleIDs,
+			"tenant_id":   tenantID,
+		})
+		return err
+	}
+
+	return nil
+}
+
+// DeleteAllSessions deletes all sessions for the current tenant
+func (s *sessionService) DeleteAllSessions(ctx context.Context) error {
+	tenantID := types.MustTenantIDFromContext(ctx)
+	userID := sessionUserIDFromContext(ctx)
+	logger.Infof(ctx, "Deleting all sessions for tenant %d", tenantID)
+
+	sessions, err := s.sessionRepo.GetByTenantID(ctx, tenantID, userID)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to list sessions for cleanup: %v", err)
+	} else {
+		bgCtx := context.WithoutCancel(ctx)
+		for _, session := range sessions {
+			// Cleanup chat history knowledge entries (async, best-effort)
+			go func(sessionID string) {
+				knowledgeIDs, err := s.messageRepo.GetKnowledgeIDsBySessionID(bgCtx, sessionID)
+				if err != nil {
+					logger.Warnf(bgCtx, "Failed to get knowledge IDs for session %s: %v", sessionID, err)
+					return
+				}
+				if len(knowledgeIDs) > 0 {
+					if err := s.knowledgeService.DeleteKnowledgeList(bgCtx, knowledgeIDs); err != nil {
+						logger.Warnf(bgCtx, "Failed to delete chat history knowledge for session %s: %v", sessionID, err)
+					}
+				}
+			}(session.ID)
+
+			if err := s.webSearchStateRepo.DeleteWebSearchTempKBState(ctx, session.ID); err != nil {
+				logger.Warnf(ctx, "Failed to cleanup temporary KB for session %s: %v", session.ID, err)
+			}
+		}
+	}
+
+	if _, err := s.sessionRepo.DeleteAllByTenantID(ctx, tenantID, userID); err != nil {
+		logger.ErrorWithFields(ctx, err, map[string]interface{}{
+			"tenant_id": tenantID,
+		})
+		return err
+	}
+
+	logger.Infof(ctx, "All sessions deleted for tenant %d", tenantID)
 	return nil
 }
 
 // GenerateTitle generates a title for the current conversation content
+// modelID: optional model ID to use for title generation (if empty, uses first available KnowledgeQA model)
 func (s *sessionService) GenerateTitle(ctx context.Context,
-	sessionID string, messages []types.Message,
+	session *types.Session, messages []types.Message, modelID string,
 ) (string, error) {
-	logger.Info(ctx, "Start generating session title")
-
-	// Validate session ID
-	if sessionID == "" {
-		logger.Error(ctx, "Failed to generate title: session ID cannot be empty")
-		return "", errors.New("session id is required")
-	}
-
-	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
-	logger.Infof(ctx, "Getting session info, session ID: %s, tenant ID: %d", sessionID, tenantID)
-
-	// Get session from repository
-	session, err := s.sessionRepo.Get(ctx, tenantID, sessionID)
-	if err != nil {
-		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"session_id": sessionID,
-			"tenant_id":  tenantID,
-		})
-		return "", err
+	if session == nil {
+		logger.Error(ctx, "Failed to generate title: session cannot be empty")
+		return "", stderrors.New("session cannot be empty")
 	}
 
 	// Skip if title already exists
 	if session.Title != "" {
-		logger.Infof(ctx, "Session already has a title, session ID: %s, title: %s", sessionID, session.Title)
 		return session.Title, nil
 	}
-
+	var err error
 	// Get the first user message, either from provided messages or repository
 	var message *types.Message
 	if len(messages) == 0 {
-		logger.Info(ctx, "Message list is empty, getting the first user message")
-		message, err = s.messageRepo.GetFirstMessageOfUser(ctx, sessionID)
+		message, err = s.messageRepo.GetFirstMessageOfUser(ctx, session.ID)
 		if err != nil {
 			logger.ErrorWithFields(ctx, err, map[string]interface{}{
-				"session_id": sessionID,
+				"session_id": session.ID,
 			})
 			return "", err
 		}
 	} else {
-		logger.Info(ctx, "Searching for user message in message list")
 		for _, m := range messages {
 			if m.Role == "user" {
 				message = &m
@@ -254,32 +464,56 @@ func (s *sessionService) GenerateTitle(ctx context.Context,
 	// Ensure a user message was found
 	if message == nil {
 		logger.Error(ctx, "No user message found, cannot generate title")
-		return "", errors.New("no user message found")
+		return "", stderrors.New("no user message found")
 	}
 
-	// Get chat model
-	logger.Infof(ctx, "Getting chat model, model ID: %s", session.SummaryModelID)
-	chatModel, err := s.modelService.GetChatModel(ctx, session.SummaryModelID)
+	// Use provided modelID, or fallback to first available KnowledgeQA model
+	if modelID == "" {
+		models, err := s.modelService.ListModels(ctx)
+		if err != nil {
+			logger.ErrorWithFields(ctx, err, nil)
+			return "", fmt.Errorf("failed to list models: %w", err)
+		}
+		for _, model := range models {
+			if model == nil {
+				continue
+			}
+			if model.Type == types.ModelTypeKnowledgeQA {
+				modelID = model.ID
+				logger.Infof(ctx, "Using first available KnowledgeQA model for title: %s", modelID)
+				break
+			}
+		}
+		if modelID == "" {
+			logger.Error(ctx, "No KnowledgeQA model found")
+			return "", stderrors.New("no KnowledgeQA model available for title generation")
+		}
+	} else {
+		logger.Infof(ctx, "Using specified model for title generation: %s", modelID)
+	}
+
+	chatModel, err := s.modelService.GetChatModel(ctx, modelID)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"model_id": session.SummaryModelID,
+			"model_id": modelID,
 		})
 		return "", err
 	}
 
 	// Prepare messages for title generation
-	logger.Info(ctx, "Preparing to generate session title")
+	titlePrompt := types.RenderPromptPlaceholders(s.cfg.Conversation.GenerateSessionTitlePrompt, types.PlaceholderValues{
+		"language": types.LanguageNameFromContext(ctx),
+	})
 	var chatMessages []chat.Message
 	chatMessages = append(chatMessages,
-		chat.Message{Role: "system", Content: s.cfg.Conversation.GenerateSessionTitlePrompt},
+		chat.Message{Role: "system", Content: titlePrompt},
 	)
 	chatMessages = append(chatMessages,
-		chat.Message{Role: "user", Content: message.Content + " /no_think"},
+		chat.Message{Role: "user", Content: message.Content},
 	)
 
 	// Call model to generate title
 	thinking := false
-	logger.Info(ctx, "Calling model to generate title")
 	response, err := chatModel.Chat(ctx, chatMessages, &chat.ChatOptions{
 		Temperature: 0.3,
 		Thinking:    &thinking,
@@ -291,227 +525,89 @@ func (s *sessionService) GenerateTitle(ctx context.Context,
 
 	// Process and store the generated title
 	session.Title = strings.TrimPrefix(response.Content, "<think>\n\n</think>")
-	logger.Infof(ctx, "Title generated successfully: %s", session.Title)
 
 	// Update session with new title
-	logger.Info(ctx, "Updating session title")
-	err = s.sessionRepo.Update(ctx, session)
+	_, err = s.sessionRepo.Update(ctx, session, session.UserID)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, nil)
 		return "", err
 	}
 
-	logger.Infof(ctx, "Session title updated successfully, ID: %s, title: %s", sessionID, session.Title)
 	return session.Title, nil
 }
 
-// KnowledgeQA performs knowledge base question answering with LLM summarization
-func (s *sessionService) KnowledgeQA(ctx context.Context, sessionID, query string) (
-	[]*types.SearchResult, <-chan types.StreamResponse, error,
+// GenerateTitleAsync generates a title for the session asynchronously
+// This method clones the session and generates the title in a goroutine
+// It emits an event when the title is generated
+// modelID: optional model ID to use for title generation (if empty, uses first available KnowledgeQA model)
+func (s *sessionService) GenerateTitleAsync(
+	ctx context.Context,
+	session *types.Session,
+	userQuery string,
+	modelID string,
+	eventBus *event.EventBus,
 ) {
-	logger.Info(ctx, "Start knowledge base question answering")
-	logger.Infof(ctx, "Knowledge base question answering parameters, session ID: %s, query: %s", sessionID, query)
-
-	// Get tenant ID from context
-	tenantID := ctx.Value(types.TenantIDContextKey).(uint)
-	logger.Infof(ctx, "Getting session info, session ID: %s, tenant ID: %d", sessionID, tenantID)
-
-	// Get session information
-	session, err := s.sessionRepo.Get(ctx, tenantID, sessionID)
-	if err != nil {
-		logger.Errorf(ctx, "Failed to get session, session ID: %s, error: %v", sessionID, err)
-		return nil, nil, err
-	}
-
-	// Validate knowledge base association
-	if session.KnowledgeBaseID == "" {
-		logger.Warnf(ctx, "Session has no associated knowledge base, session ID: %s", sessionID)
-		return nil, nil, errors.New("session has no knowledge base")
-	}
-
-	// Create chat management object with session settings
-	logger.Infof(ctx, "Creating chat manage object, knowledge base ID: %s", session.KnowledgeBaseID)
-	chatManage := &types.ChatManage{
-		Query:            query,
-		RewriteQuery:     query,
-		SessionID:        sessionID,
-		KnowledgeBaseID:  session.KnowledgeBaseID,
-		VectorThreshold:  session.VectorThreshold,
-		KeywordThreshold: session.KeywordThreshold,
-		EmbeddingTopK:    session.EmbeddingTopK,
-		RerankModelID:    session.RerankModelID,
-		RerankTopK:       session.RerankTopK,
-		RerankThreshold:  session.RerankThreshold,
-		ChatModelID:      session.SummaryModelID,
-		SummaryConfig: types.SummaryConfig{
-			MaxTokens:           session.SummaryParameters.MaxTokens,
-			RepeatPenalty:       session.SummaryParameters.RepeatPenalty,
-			TopK:                session.SummaryParameters.TopK,
-			TopP:                session.SummaryParameters.TopP,
-			FrequencyPenalty:    session.SummaryParameters.FrequencyPenalty,
-			PresencePenalty:     session.SummaryParameters.PresencePenalty,
-			Prompt:              session.SummaryParameters.Prompt,
-			ContextTemplate:     session.SummaryParameters.ContextTemplate,
-			Temperature:         session.SummaryParameters.Temperature,
-			Seed:                session.SummaryParameters.Seed,
-			NoMatchPrefix:       session.SummaryParameters.NoMatchPrefix,
-			MaxCompletionTokens: session.SummaryParameters.MaxCompletionTokens,
-		},
-		FallbackResponse: session.FallbackResponse,
-	}
-
-	// Start knowledge QA event processing
-	logger.Info(ctx, "Triggering knowledge base question answering event")
-	err = s.KnowledgeQAByEvent(ctx, chatManage, types.Pipline["rag_stream"])
-	if err != nil {
-		logger.ErrorWithFields(ctx, err, map[string]interface{}{
-			"session_id":        sessionID,
-			"knowledge_base_id": session.KnowledgeBaseID,
-		})
-		return nil, nil, err
-	}
-
-	logger.Info(ctx, "Knowledge base question answering completed")
-	return chatManage.MergeResult, chatManage.ResponseChan, nil
-}
-
-// KnowledgeQAByEvent processes knowledge QA through a series of events in the pipeline
-func (s *sessionService) KnowledgeQAByEvent(ctx context.Context,
-	chatManage *types.ChatManage, eventList []types.EventType,
-) error {
-	ctx, span := tracing.ContextWithSpan(ctx, "SessionService.KnowledgeQAByEvent")
-	defer span.End()
-
-	logger.Info(ctx, "Start processing knowledge base question answering through events")
-	logger.Infof(ctx, "Knowledge base question answering parameters, session ID: %s, knowledge base ID: %s, query: %s",
-		chatManage.SessionID, chatManage.KnowledgeBaseID, chatManage.Query)
-
-	// Prepare method list for logging and tracing
-	methods := []string{}
-	for _, event := range eventList {
-		methods = append(methods, string(event))
-	}
-
-	// Set up tracing attributes
-	logger.Infof(ctx, "Trigger event list: %v", methods)
-	span.SetAttributes(
-		attribute.String("request_id", ctx.Value(types.RequestIDContextKey).(string)),
-		attribute.String("query", chatManage.Query),
-		attribute.String("method", strings.Join(methods, ",")),
-	)
-
-	// Process each event in sequence
-	for _, event := range eventList {
-		logger.Infof(ctx, "Starting to trigger event: %v", event)
-		err := s.eventManager.Trigger(ctx, event, chatManage)
-
-		// Handle case where search returns no results
-		if err == chatpipline.ErrSearchNothing {
-			logger.Warnf(ctx, "Event %v triggered, search result is empty, using fallback response", event)
-			chatManage.ResponseChan = chatpipline.NewFallbackChan(ctx, chatManage.FallbackResponse)
-			chatManage.ChatResponse = &types.ChatResponse{Content: chatManage.FallbackResponse}
-			return nil
+	// Use context tenant (effective tenant when using shared agent) so ListModels/GetChatModel find the agent's model.
+	// The session row itself is still updated by its persisted tenant/user owner scope.
+	tenantID := ctx.Value(types.TenantIDContextKey)
+	requestID := ctx.Value(types.RequestIDContextKey)
+	language := ctx.Value(types.LanguageContextKey)
+	// Keep the Langfuse trace handle so the async title generation shows up
+	// as a child of the same trace as the originating chat request.
+	langfuseTrace := ctx.Value(types.LangfuseTraceContextKey)
+	go func() {
+		bgCtx := context.Background()
+		if tenantID != nil {
+			bgCtx = context.WithValue(bgCtx, types.TenantIDContextKey, tenantID)
+		}
+		if requestID != nil {
+			bgCtx = context.WithValue(bgCtx, types.RequestIDContextKey, requestID)
+		}
+		if language != nil {
+			bgCtx = context.WithValue(bgCtx, types.LanguageContextKey, language)
+		}
+		if langfuseTrace != nil {
+			bgCtx = context.WithValue(bgCtx, types.LangfuseTraceContextKey, langfuseTrace)
 		}
 
-		// Handle other errors
+		// Skip if title already exists
+		if session.Title != "" {
+			return
+		}
+
+		// Generate title using the first user message
+		messages := []types.Message{
+			{
+				Role:    "user",
+				Content: userQuery,
+			},
+		}
+
+		title, err := s.GenerateTitle(bgCtx, session, messages, modelID)
 		if err != nil {
-			logger.Errorf(ctx, "Event triggering failed, event: %v, error type: %s, description: %s, error: %v",
-				event, err.ErrorType, err.Description, err.Err)
-			span.RecordError(err.Err)
-			span.SetStatus(codes.Error, err.Description)
-			span.SetAttributes(attribute.String("error_type", err.ErrorType))
-			return err.Err
-		}
-		logger.Infof(ctx, "Event %v triggered successfully", event)
-	}
-
-	logger.Info(ctx, "All events triggered successfully")
-	return nil
-}
-
-// SearchKnowledge performs knowledge base search without LLM summarization
-func (s *sessionService) SearchKnowledge(ctx context.Context,
-	knowledgeBaseID, query string,
-) ([]*types.SearchResult, error) {
-	logger.Info(ctx, "Start knowledge base search without LLM summary")
-	logger.Infof(ctx, "Knowledge base search parameters, knowledge base ID: %s, query: %s", knowledgeBaseID, query)
-
-	// Create default retrieval parameters
-	chatManage := &types.ChatManage{
-		Query:            query,
-		RewriteQuery:     query,
-		KnowledgeBaseID:  knowledgeBaseID,
-		VectorThreshold:  s.cfg.Conversation.VectorThreshold,  // Use default configuration
-		KeywordThreshold: s.cfg.Conversation.KeywordThreshold, // Use default configuration
-		EmbeddingTopK:    s.cfg.Conversation.EmbeddingTopK,    // Use default configuration
-		RerankTopK:       s.cfg.Conversation.RerankTopK,       // Use default configuration
-		RerankThreshold:  s.cfg.Conversation.RerankThreshold,  // Use default configuration
-	}
-
-	// Get default models
-	models, err := s.modelService.ListModels(ctx)
-	if err != nil {
-		logger.Errorf(ctx, "Failed to get models: %v", err)
-		return nil, err
-	}
-
-	// Find the first available rerank model
-	for _, model := range models {
-		if model.Type == types.ModelTypeRerank {
-			chatManage.RerankModelID = model.ID
-			break
-		}
-	}
-
-	// Use specific event list, only including retrieval-related events, not LLM summarization
-	searchEvents := []types.EventType{
-		types.PREPROCESS_QUERY, // Preprocess query
-		types.CHUNK_SEARCH,     // Vector search
-		types.CHUNK_RERANK,     // Rerank search results
-		types.CHUNK_MERGE,      // Merge search results
-		types.FILTER_TOP_K,     // Filter top K results
-	}
-
-	ctx, span := tracing.ContextWithSpan(ctx, "SessionService.SearchKnowledge")
-	defer span.End()
-
-	// Prepare method list for logging and tracing
-	methods := []string{}
-	for _, event := range searchEvents {
-		methods = append(methods, string(event))
-	}
-
-	// Set up tracing attributes
-	logger.Infof(ctx, "Trigger search event list: %v", methods)
-	span.SetAttributes(
-		attribute.String("query", query),
-		attribute.String("knowledge_base_id", knowledgeBaseID),
-		attribute.String("method", strings.Join(methods, ",")),
-	)
-
-	// Process each search event in sequence
-	for _, event := range searchEvents {
-		logger.Infof(ctx, "Starting to trigger search event: %v", event)
-		err := s.eventManager.Trigger(ctx, event, chatManage)
-
-		// Handle case where search returns no results
-		if err == chatpipline.ErrSearchNothing {
-			logger.Warnf(ctx, "Event %v triggered, search result is empty", event)
-			return []*types.SearchResult{}, nil
+			logger.ErrorWithFields(bgCtx, err, map[string]interface{}{
+				"session_id": session.ID,
+			})
+			return
 		}
 
-		// Handle other errors
-		if err != nil {
-			logger.Errorf(ctx, "Event triggering failed, event: %v, error type: %s, description: %s, error: %v",
-				event, err.ErrorType, err.Description, err.Err)
-			span.RecordError(err.Err)
-			span.SetStatus(codes.Error, err.Description)
-			span.SetAttributes(attribute.String("error_type", err.ErrorType))
-			return nil, err.Err
+		// Emit title update event - BUG FIX: use bgCtx instead of ctx
+		// The original ctx is from the HTTP request and may be cancelled by the time we get here
+		if eventBus != nil {
+			if err := eventBus.Emit(bgCtx, event.Event{
+				Type:      event.EventSessionTitle,
+				SessionID: session.ID,
+				Data: event.SessionTitleData{
+					SessionID: session.ID,
+					Title:     title,
+				},
+			}); err != nil {
+				logger.ErrorWithFields(bgCtx, err, map[string]interface{}{
+					"session_id": session.ID,
+				})
+			} else {
+				logger.Infof(bgCtx, "Title update event emitted successfully, session ID: %s, title: %s", session.ID, title)
+			}
 		}
-		logger.Infof(ctx, "Event %v triggered successfully", event)
-	}
-
-	logger.Infof(ctx, "Knowledge base search completed, found %d results", len(chatManage.MergeResult))
-	return chatManage.MergeResult, nil
+	}()
 }

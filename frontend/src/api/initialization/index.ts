@@ -1,4 +1,7 @@
-import { get, post } from '../../utils/request';
+import { get, post, put } from '../../utils/request';
+import i18n from '@/i18n'
+
+const t = (key: string) => i18n.global.t(key)
 
 // 初始化配置数据类型
 export interface InitializationConfig {
@@ -19,6 +22,7 @@ export interface InitializationConfig {
         modelName: string;
         baseUrl: string;
         apiKey?: string;
+        enabled: boolean;
     };
     multimodal: {
         enabled: boolean;
@@ -46,9 +50,24 @@ export interface InitializationConfig {
         chunkSize: number;
         chunkOverlap: number;
         separators: string[];
+        // Adaptive chunking strategy. Empty / "legacy" = classic recursive splitter.
+        // "auto" lets the backend profiler pick a tier; "heading" / "heuristic"
+        // pin the tier explicitly. See backend chunker package for details.
+        strategy?: string;
+        // Cap chunk size in approx tokens. 0 = char-based budget only.
+        tokenLimit?: number;
+        // Language hints for heuristic patterns ("de", "en", "zh"). Empty = auto-detect.
+        languages?: string[];
     };
     // Frontend-only hint for storage selection UI
     storageType?: 'cos' | 'minio';
+    nodeExtract: {
+        enabled: boolean,
+        text: string,
+        tags: string[],
+        nodes: Node[],
+        relations: Relation[]
+    }
 }
 
 // 下载任务状态类型
@@ -62,34 +81,84 @@ export interface DownloadTask {
     endTime?: string;
 }
 
-// 系统初始化状态检查
-export function checkInitializationStatus(): Promise<{ initialized: boolean }> {
+// 简化版知识库配置更新接口（只传模型ID）
+export interface KBModelConfigRequest {
+    llmModelId: string
+    embeddingModelId: string
+    vlm_config?: {
+        enabled: boolean
+        model_id?: string
+    }
+    asr_config?: {
+        enabled: boolean
+        model_id?: string
+        language?: string
+    }
+    documentSplitting: {
+        chunkSize: number
+        chunkOverlap: number
+        separators: string[]
+        parserEngineRules?: { file_types: string[]; engine: string }[]
+        enableParentChild?: boolean
+        parentChunkSize?: number
+        childChunkSize?: number
+        // Adaptive chunking strategy ("auto" | "heading" | "heuristic" | "legacy").
+        // The backend uses pointer-based DTOs for these three fields:
+        // - undefined / not set in payload → no change on server
+        // - "" / 0 / [] explicitly sent     → clears the value
+        // Send the field whenever the user has opened the editor — even
+        // empty values — so the user can always reset back to defaults.
+        strategy?: string
+        // Approximate token budget per chunk; 0 = char-based.
+        tokenLimit?: number
+        // Language hints for heuristic patterns. Empty array = auto-detect.
+        languages?: string[]
+    }
+    multimodal: {
+        enabled: boolean
+    }
+    /** 存储引擎选择："local" | "minio" | "cos" | "obs" 等，影响文档上传与文档内图片存储 */
+    storageProvider?: string
+    nodeExtract: {
+        enabled: boolean
+        text: string
+        tags: string[]
+        nodes: Node[]
+        relations: Relation[]
+    }
+    questionGeneration?: {
+        enabled: boolean
+        questionCount: number
+    }
+}
+
+export function updateKBConfig(kbId: string, config: KBModelConfigRequest): Promise<any> {
     return new Promise((resolve, reject) => {
-        get('/api/v1/initialization/status')
+        console.log('Starting KB config update (simplified)...', kbId, config);
+        put(`/api/v1/initialization/config/${kbId}`, config)
             .then((response: any) => {
-                resolve(response.data || { initialized: false });
+                console.log('KB config update completed', response);
+                resolve(response);
             })
             .catch((error: any) => {
-                console.warn('检查初始化状态失败，假设需要初始化:', error);
-                resolve({ initialized: false });
+                console.error('Failed to update KB config:', error);
+                reject(error.error || error);
             });
     });
 }
 
-// 执行系统初始化
-export function initializeSystem(config: InitializationConfig): Promise<any> {
+// 根据知识库ID执行配置更新（旧版，保留兼容性）
+export function initializeSystemByKB(kbId: string, config: InitializationConfig): Promise<any> {
     return new Promise((resolve, reject) => {
-        console.log('开始系统初始化...', config);
-        post('/api/v1/initialization/initialize', config)
+        console.log('Starting KB config update...', kbId, config);
+        post(`/api/v1/initialization/initialize/${kbId}`, config)
             .then((response: any) => {
-                console.log('系统初始化完成', response);
-                // 设置本地初始化状态标记
-                localStorage.setItem('system_initialized', 'true');
+                console.log('KB config update completed', response);
                 resolve(response);
             })
             .catch((error: any) => {
-                console.error('系统初始化失败:', error);
-                reject(error);
+                console.error('Failed to update KB config:', error);
+                reject(error.error || error);
             });
     });
 }
@@ -102,21 +171,29 @@ export function checkOllamaStatus(): Promise<{ available: boolean; version?: str
                 resolve(response.data || { available: false });
             })
             .catch((error: any) => {
-                console.error('检查Ollama状态失败:', error);
-                resolve({ available: false, error: error.message || '检查失败' });
+                console.error('Failed to check Ollama status:', error);
+                resolve({ available: false, error: error.message || t('error.initialization.checkFailed') });
             });
     });
 }
 
-// 列出已安装的 Ollama 模型
-export function listOllamaModels(): Promise<string[]> {
+// Ollama 模型详细信息接口
+export interface OllamaModelInfo {
+    name: string;
+    size: number;
+    digest: string;
+    modified_at: string;
+}
+
+// 列出已安装的 Ollama 模型（详细信息）
+export function listOllamaModels(): Promise<OllamaModelInfo[]> {
     return new Promise((resolve, reject) => {
         get('/api/v1/initialization/ollama/models')
             .then((response: any) => {
                 resolve((response.data && response.data.models) || []);
             })
             .catch((error: any) => {
-                console.error('获取 Ollama 模型列表失败:', error);
+                console.error('Failed to list Ollama models:', error);
                 resolve([]);
             });
     });
@@ -130,7 +207,7 @@ export function checkOllamaModels(models: string[]): Promise<{ models: Record<st
                 resolve(response.data || { models: {} });
             })
             .catch((error: any) => {
-                console.error('检查Ollama模型状态失败:', error);
+                console.error('Failed to check Ollama models:', error);
                 reject(error);
             });
     });
@@ -144,7 +221,7 @@ export function downloadOllamaModel(modelName: string): Promise<{ taskId: string
                 resolve(response.data || { taskId: '', modelName, status: 'failed', progress: 0 });
             })
             .catch((error: any) => {
-                console.error('启动Ollama模型下载失败:', error);
+                console.error('Failed to start Ollama model download:', error);
                 reject(error);
             });
     });
@@ -158,7 +235,7 @@ export function getDownloadProgress(taskId: string): Promise<DownloadTask> {
                 resolve(response.data);
             })
             .catch((error: any) => {
-                console.error('查询下载进度失败:', error);
+                console.error('Failed to get download progress:', error);
                 reject(error);
             });
     });
@@ -172,24 +249,33 @@ export function listDownloadTasks(): Promise<DownloadTask[]> {
                 resolve(response.data || []);
             })
             .catch((error: any) => {
-                console.error('获取下载任务列表失败:', error);
+                console.error('Failed to list download tasks:', error);
                 reject(error);
             });
     });
 }
 
-// 获取当前系统配置
-export function getCurrentConfig(): Promise<InitializationConfig & { hasFiles: boolean }> {
+
+export function getCurrentConfigByKB(kbId: string): Promise<InitializationConfig & { hasFiles: boolean }> {
     return new Promise((resolve, reject) => {
-        get('/api/v1/initialization/config')
+        get(`/api/v1/initialization/config/${kbId}`)
             .then((response: any) => {
                 resolve(response.data || {});
             })
             .catch((error: any) => {
-                console.error('获取当前配置失败:', error);
+                console.error('Failed to get KB config:', error);
                 reject(error);
             });
     });
+}
+
+// 所有"测试连接"接口共用的通用可选参数。
+// customHeaders / extraConfig / interfaceType 对应后端 ModelTestRequest 里的同名字段，
+// 会被透传给真正的模型装配流程，保证测试连接与生产调用走完全相同的路径。
+interface BaseModelTestPayload {
+    customHeaders?: Record<string, string>;
+    extraConfig?: Record<string, string>;
+    interfaceType?: string;
 }
 
 // 检查远程API模型
@@ -197,7 +283,11 @@ export function checkRemoteModel(modelConfig: {
     modelName: string;
     baseUrl: string;
     apiKey?: string;
-}): Promise<{
+    provider?: string;
+    // 编辑已存在模型时传 modelId，后端会自动从存储中带出 apiKey
+    // （前端不再回显明文密钥，所以测试连接必须用这个回填路径）
+    modelId?: string;
+} & BaseModelTestPayload): Promise<{
     available: boolean;
     message?: string;
 }> {
@@ -207,7 +297,7 @@ export function checkRemoteModel(modelConfig: {
                 resolve(response.data || {});
             })
             .catch((error: any) => {
-                console.error('检查远程模型失败:', error);
+                console.error('Failed to check remote model:', error);
                 reject(error);
             });
     });
@@ -220,14 +310,16 @@ export function testEmbeddingModel(modelConfig: {
     baseUrl?: string;
     apiKey?: string;
     dimension?: number;
-}): Promise<{ available: boolean; message?: string; dimension?: number }> {
+    provider?: string;
+    modelId?: string;
+} & BaseModelTestPayload): Promise<{ available: boolean; message?: string; dimension?: number }> {
     return new Promise((resolve, reject) => {
         post('/api/v1/initialization/embedding/test', modelConfig)
             .then((response: any) => {
                 resolve(response.data || {});
             })
             .catch((error: any) => {
-                console.error('测试Embedding模型失败:', error);
+                console.error('Failed to test Embedding model:', error);
                 reject(error);
             });
     });
@@ -238,7 +330,9 @@ export function checkRerankModel(modelConfig: {
     modelName: string;
     baseUrl: string;
     apiKey?: string;
-}): Promise<{
+    provider?: string;
+    modelId?: string;
+} & BaseModelTestPayload): Promise<{
     available: boolean;
     message?: string;
 }> {
@@ -248,7 +342,30 @@ export function checkRerankModel(modelConfig: {
                 resolve(response.data || {});
             })
             .catch((error: any) => {
-                console.error('检查Rerank模型失败:', error);
+                console.error('Failed to check Rerank model:', error);
+                reject(error);
+            });
+    });
+}
+
+// 检查 ASR 模型连接（通过 /v1/audio/transcriptions 端点测试）
+export function checkASRModel(modelConfig: {
+    modelName: string;
+    baseUrl: string;
+    apiKey?: string;
+    provider?: string;
+    modelId?: string;
+} & BaseModelTestPayload): Promise<{
+    available: boolean;
+    message?: string;
+}> {
+    return new Promise((resolve, reject) => {
+        post('/api/v1/initialization/asr/check', modelConfig)
+            .then((response: any) => {
+                resolve(response.data || {});
+            })
+            .catch((error: any) => {
+                console.error('Failed to check ASR model:', error);
                 reject(error);
             });
     });
@@ -260,7 +377,7 @@ export function testMultimodalFunction(testData: {
     vlm_base_url: string;
     vlm_api_key?: string;
     vlm_interface_type?: string;
-    storage_type?: 'cos'|'minio';
+    storage_type?: 'cos' | 'minio';
     // COS optional fields (required only when storage_type === 'cos')
     cos_secret_id?: string;
     cos_secret_key?: string;
@@ -311,22 +428,145 @@ export function testMultimodalFunction(testData: {
         formData.append('chunk_overlap', testData.chunk_overlap.toString());
         formData.append('separators', JSON.stringify(testData.separators));
 
+        // 获取鉴权Token
+        const token = localStorage.getItem('weknora_token');
+        const headers: Record<string, string> = {};
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
+        // 跨租户访问请求头：直接附，避免 short-circuit "selectedTenantId
+        // === defaultTenantId 时不附" 在某些边角下让 header 静默丢失。
+        // 与 utils/request.ts、api/chat/streame.ts 行为一致。
+        const selectedTenantId = localStorage.getItem('weknora_selected_tenant_id');
+        if (selectedTenantId) {
+            headers['X-Tenant-ID'] = selectedTenantId;
+        }
+
         // 使用原生fetch因为需要发送FormData
         fetch('/api/v1/initialization/multimodal/test', {
             method: 'POST',
+            headers,
             body: formData
         })
-        .then(response => response.json())
-        .then((data: any) => {
-            if (data.success) {
-                resolve(data.data || {});
-            } else {
-                resolve({ success: false, message: data.message || '测试失败' });
-            }
-        })
-        .catch((error: any) => {
-            console.error('多模态测试失败:', error);
-            reject(error);
-        });
+            .then(response => response.json())
+            .then((data: any) => {
+                if (data.success) {
+                    resolve(data.data || {});
+                } else {
+                    resolve({ success: false, message: data.message || t('error.initialization.testFailed') });
+                }
+            })
+            .catch((error: any) => {
+                console.error('Failed multimodal test:', error);
+                reject(error);
+            });
     });
-} 
+}
+
+// 文本内容关系提取接口
+export interface TextRelationExtractionRequest {
+    text: string;
+    tags: string[];
+    model_id: string;
+}
+
+export interface Node {
+    name: string;
+    attributes: string[];
+}
+
+export interface Relation {
+    node1: string;
+    node2: string;
+    type: string;
+}
+
+export interface TextRelationExtractionResponse {
+    nodes: Node[];
+    relations: Relation[];
+}
+
+// 文本内容关系提取
+export function extractTextRelations(request: TextRelationExtractionRequest): Promise<TextRelationExtractionResponse> {
+    return new Promise((resolve, reject) => {
+        post('/api/v1/initialization/extract/text-relation', request, { timeout: 60000 })
+            .then((response: any) => {
+                resolve(response.data || { nodes: [], relations: [] });
+            })
+            .catch((error: any) => {
+                console.error('Failed to extract text relations:', error);
+                reject(error);
+            });
+    });
+}
+
+export interface FabriTextRequest {
+    tags: string[];
+    model_id: string;
+}
+
+export interface FabriTextResponse {
+    text: string;
+}
+
+// 文本内容生成
+export function fabriText(request: FabriTextRequest): Promise<FabriTextResponse> {
+    return new Promise((resolve, reject) => {
+        post('/api/v1/initialization/extract/fabri-text', request)
+            .then((response: any) => {
+                resolve(response.data || { text: '' });
+            })
+            .catch((error: any) => {
+                console.error('Failed to generate text:', error);
+                reject(error);
+            });
+    });
+}
+
+export interface FabriTagRequest {
+}
+
+export interface FabriTagResponse {
+    tags: string[];
+}
+
+// 标签生成
+export function fabriTag(request: FabriTagRequest): Promise<FabriTagResponse> {
+    return new Promise((resolve, reject) => {
+        post('/api/v1/initialization/extract/fabri-tag', request)
+            .then((response: any) => {
+                resolve(response.data || { tags: [] as string[] });
+            })
+            .catch((error: any) => {
+                console.error('Failed to generate tags:', error);
+                reject(error);
+            });
+    });
+}
+
+// 模型厂商信息类型
+export interface ModelProviderOption {
+    value: string;        // provider 标识符
+    label: string;        // 显示名称
+    description: string;  // 描述
+    defaultUrls: Record<string, string>;  // 按模型类型区分的默认 URL
+    modelTypes: string[]; // 支持的模型类型
+}
+
+// 获取模型厂商列表
+export function listModelProviders(modelType?: string): Promise<ModelProviderOption[]> {
+    return new Promise((resolve, reject) => {
+        const url = modelType
+            ? `/api/v1/models/providers?model_type=${encodeURIComponent(modelType)}`
+            : '/api/v1/models/providers';
+        get(url)
+            .then((response: any) => {
+                resolve(response.data || []);
+            })
+            .catch((error: any) => {
+                console.error('Failed to list model providers:', error);
+                resolve([]); // 失败时返回空数组，前端可以回退到默认值
+            });
+    });
+}

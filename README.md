@@ -5,22 +5,35 @@
 </p>
 
 <p align="center">
+  <picture>
+    <a href="https://trendshift.io/repositories/15289" target="_blank">
+      <img src="https://trendshift.io/api/badge/repositories/15289" alt="Tencent%2FWeKnora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    </a>
+  </picture>
+</p>
+<p align="center">
     <a href="https://weknora.weixin.qq.com" target="_blank">
-        <img alt="官方网站" src="https://img.shields.io/badge/官方网站-WeKnora-4e6b99">
+        <img alt="Official Website" src="https://img.shields.io/badge/Official Website-WeKnora-4e6b99">
     </a>
     <a href="https://chatbot.weixin.qq.com" target="_blank">
-        <img alt="微信对话开放平台" src="https://img.shields.io/badge/微信对话开放平台-5ac725">
+        <img alt="WeChat Dialog Open Platform" src="https://img.shields.io/badge/WeChat Dialog Open Platform-5ac725">
+    </a>
+    <a href="https://chromewebstore.google.com/detail/jpemjbopikggjlmikmclgbmkhhopjdgd" target="_blank">
+        <img alt="Chrome Extension" src="https://img.shields.io/badge/Chrome Extension-WeKnora-4285F4">
+    </a>
+    <a href="https://clawhub.ai/lyingbug/weknora" target="_blank">
+        <img alt="ClawHub Skill" src="https://img.shields.io/badge/ClawHub Skill-WeKnora-ff6b35">
     </a>
     <a href="https://github.com/Tencent/WeKnora/blob/main/LICENSE">
         <img src="https://img.shields.io/badge/License-MIT-ffffff?labelColor=d4eaf7&color=2e6cc4" alt="License">
     </a>
     <a href="./CHANGELOG.md">
-        <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-2e6cc4?labelColor=d4eaf7">
+        <img alt="Version" src="https://img.shields.io/badge/version-0.6.0-2e6cc4?labelColor=d4eaf7">
     </a>
 </p>
 
 <p align="center">
-| <b>English</b> | <a href="./README_CN.md"><b>简体中文</b></a> | <a href="./README_JA.md"><b>日本語</b></a> |
+| <b>English</b> | <a href="./README_CN.md"><b>简体中文</b></a> | <a href="./README_JA.md"><b>日本語</b></a> | <a href="./README_KO.md"><b>한국어</b></a> |
 </p>
 
 <p align="center">
@@ -31,121 +44,189 @@
   </h4>
 </p>
 
-# 💡 WeKnora - LLM-Powered Document Understanding & Retrieval Framework
+# 💡 WeKnora — Turn Documents into Living Knowledge with RAG, Agents and Auto-Wiki
 
 ## 📌 Overview
 
-[**WeKnora**](https://weknora.weixin.qq.com) is an LLM-powered framework designed for deep document understanding and semantic retrieval, especially for handling complex, heterogeneous documents. 
+[**WeKnora**](https://weknora.weixin.qq.com) is an open-source, LLM-powered knowledge framework built for enterprise-grade document understanding, semantic retrieval, and autonomous reasoning.
 
-It adopts a modular architecture that combines multimodal preprocessing, semantic vector indexing, intelligent retrieval, and large language model inference. At its core, WeKnora follows the **RAG (Retrieval-Augmented Generation)** paradigm, enabling high-quality, context-aware answers by combining relevant document chunks with model reasoning.
+It is organized around three core capabilities: **RAG-based Quick Q&A** for everyday lookups, a **ReAct Agent** that autonomously orchestrates retrieval, MCP tools and web search to handle complex multi-step tasks, and a brand-new **Wiki Mode** in which agents distill raw documents into a self-maintaining, interlinked markdown knowledge base with an interactive knowledge graph. Combined with multi-source ingestion (Feishu / Notion / Yuque, and growing), 20+ LLM provider integrations, full Langfuse observability, **enterprise-ready multi-tenant RBAC** (4-tier role matrix + per-resource ownership + per-tenant audit log), and a fully self-hostable modular architecture, WeKnora turns scattered documents into a queryable, reasoning-capable, continuously evolving knowledge asset.
 
-**Website:** https://weknora.weixin.qq.com
+The framework supports auto-syncing knowledge from Feishu, Notion, and Yuque (more data sources coming soon), handles 10+ document formats including PDF, Word, images, and Excel, and can serve Q&A directly through IM channels like WeCom, Feishu, Slack, and Telegram. It is compatible with major LLM providers including OpenAI, DeepSeek, Qwen (Alibaba Cloud), Zhipu, Hunyuan, Gemini, MiniMax, NVIDIA, and Ollama. Its fully modular design allows swapping LLMs, vector databases, and storage backends, with support for local and private cloud deployment ensuring complete data sovereignty. WeKnora also integrates with **Langfuse** for comprehensive observability into agent reasoning, token usage, and pipeline tracing.
+
+
+## ✨ Latest Updates
+
+- **v0.6.0** — Tenant RBAC (4-tier role matrix `Owner` / `Admin` / `Contributor` / `Viewer` + per-KB ownership + per-tenant audit log), tenant member management & multi-workspace UX, self-service workspaces; `weknora` CLI v0.4 GA with `mcp serve`; KB retrieval fan-out across vector stores; AES-256-GCM credential encryption + docreader gRPC TLS + Token; Zhipu embedder + Huawei OBS; server-side user preferences; Go 1.26.0. See [`docs/RBAC说明.md`](./docs/RBAC说明.md) and [`CHANGELOG.md`](./CHANGELOG.md).
+- **v0.5.2** — Wiki ingest scales to 40k-document KBs (task queue + DLQ); MCP human-in-the-loop tool approval; Anthropic / Apache Doris / Tencent VectorDB / KS3 / SearXNG backends; adaptive 3-tier chunking with live preview; global ⌘K command palette; Yuque connector + WeChat Mini Program; `weknora` CLI preview.
+- **v0.5.1** — Knowledge-base batch management; tenant-wide IM channels overview; session search + user-scoped pinning; unified Model / Web Search / MCP settings cards; per-agent LLM timeout; desktop tenant switching.
+- **v0.5.0** — Wiki Mode GA — agents auto-generate structured, interlinked Markdown wiki pages with a knowledge graph; wiki browser + visual graph in the UI.
+- **v0.4.0** — WeKnora Cloud (hosted LLM + parsing); Chrome Extension; ClawHub Skill; WeChat IM; attachment processing; Azure OpenAI / Alibaba OSS; Notion connector; Baidu + Ollama web search; VectorStore management.
+- **v0.3.6** — ASR (audio); Feishu data-source auto-sync; OIDC; IM quote-reply context + thread-based sessions; document summarization; Tavily search; parallel tool calling; agent @mention scope restriction.
+- **v0.3.5** — Telegram / DingTalk / Mattermost IM; IM slash commands + QA queue; suggested questions; VLM auto-describe MCP tool images; Novita AI; channel tracking.
+- **v0.3.4** — WeCom / Feishu / Slack IM; multimodal image support; NVIDIA model API; Weaviate; AWS S3; AES-256-GCM API-key encryption; built-in MCP service; hybrid-search optimization; `final_answer` tool.
+- **v0.3.3** — Parent-child chunking; KB pinning; fallback response; passage cleaning for rerank; storage auto-creation; Milvus.
+- **v0.3.2** — Knowledge Search entry; per-source parser & storage engine config; image rendering in local storage; document preview; Volcengine TOS; Mermaid rendering; batch session management; memory graph preview.
+- **v0.3.0** — Shared Space; Agent Skills + sandboxed execution; custom agents; Data Analyst agent; thinking mode; Bing / Google web search; API Key auth; Helm chart; Korean i18n; Qdrant.
+- **v0.2.0** — Agent Mode (ReACT); multi-type knowledge bases (FAQ + document); conversation strategy config; DuckDuckGo web search; MCP tool integration; new UI with agent mode switching; MQ async task management.
+
+
+## 📱 Interface Showcase
+
+<table>
+  <tr>
+    <td colspan="2" align="center"><b>💬 Intelligent Q&A Conversation</b><br/><img src="./docs/images/qa.png" alt="Intelligent Q&A Conversation" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>📖 Wiki Browser</b><br/><img src="./docs/images/wiki-browser.png" alt="Wiki Browser" width="100%"></td>
+    <td width="50%" align="center"><b>🕸️ Wiki Knowledge Graph</b><br/><img src="./docs/images/wiki-graph.png" alt="Wiki Knowledge Graph" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>🤖 Agent Mode · Tool Call Process</b><br/><img src="./docs/images/agent-qa.png" alt="Agent Mode Tool Call Process" width="100%"></td>
+    <td width="50%" align="center"><b>⚙️ Conversation Settings</b><br/><img src="./docs/images/settings.png" alt="Conversation Settings" width="100%"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><b>🔭 Observability · Langfuse Tracing</b><br/><img src="./docs/images/langfuse.png" alt="Observability Langfuse Tracing" width="100%"></td>
+  </tr>
+</table>
 
 ## 🏗️ Architecture
 
-![weknora-pipeline.png](./docs/images/pipeline.jpg)
+![weknora-architecture.png](./docs/images/architecture.png)
 
-WeKnora employs a modern modular design to build a complete document understanding and retrieval pipeline. The system primarily includes document parsing, vector processing, retrieval engine, and large model inference as core modules, with each component being flexibly configurable and extendable.
+Fully modular pipeline from document parsing, vectorization, and retrieval to LLM inference — every component is swappable and extensible. Supports local / private cloud deployment with full data sovereignty and a zero-barrier Web UI for quick onboarding.
 
-## 🎯 Key Features
+## 🧩 Feature Overview
 
-- **🔍 Precise Understanding**: Structured content extraction from PDFs, Word documents, images and more into unified semantic views
-- **🧠 Intelligent Reasoning**: Leverages LLMs to understand document context and user intent for accurate Q&A and multi-turn conversations
-- **🔧 Flexible Extension**: All components from parsing and embedding to retrieval and generation are decoupled for easy customization
-- **⚡ Efficient Retrieval**: Hybrid retrieval strategies combining keywords, vectors, and knowledge graphs
-- **🎯 User-Friendly**: Intuitive web interface and standardized APIs for zero technical barriers
-- **🔒 Secure & Controlled**: Support for local deployment and private cloud, ensuring complete data sovereignty
+**Intelligent Conversation**
 
-## 📊 Application Scenarios
+| Capability | Details |
+|------------|---------|
+| Intelligent Reasoning | ReACT progressive multi-step reasoning, autonomously orchestrating knowledge retrieval, MCP tools, and web search; custom agent support |
+| Quick Q&A | RAG-based Q&A over knowledge bases for fast and accurate answers |
+| Wiki Mode | Agent-driven auto-generation of structured, interlinked markdown Wiki pages from raw documents |
+| Tool Calling | Built-in tools, MCP tools, web search |
+| Conversation Strategy | Online Prompt editing, retrieval threshold tuning, multi-turn context awareness |
+| Suggested Questions | Auto-generated question suggestions based on knowledge base content |
 
-| Scenario | Applications | Core Value |
-|---------|----------|----------|
-| **Enterprise Knowledge Management** | Internal document retrieval, policy Q&A, operation manual search | Improve knowledge discovery efficiency, reduce training costs |
-| **Academic Research Analysis** | Paper retrieval, research report analysis, scholarly material organization | Accelerate literature review, assist research decisions |
-| **Product Technical Support** | Product manual Q&A, technical documentation search, troubleshooting | Enhance customer service quality, reduce support burden |
-| **Legal & Compliance Review** | Contract clause retrieval, regulatory policy search, case analysis | Improve compliance efficiency, reduce legal risks |
-| **Medical Knowledge Assistance** | Medical literature retrieval, treatment guideline search, case analysis | Support clinical decisions, improve diagnosis quality |
+**Knowledge Management**
 
-## 🧩 Feature Matrix
+| Capability | Details |
+|------------|---------|
+| Knowledge Base Types | FAQ / Document / Wiki with folder import, URL import, tag management, and online entry |
+| Data Source Import | Auto-sync from Feishu / Notion / Yuque (more data sources coming soon); incremental and full sync |
+| Document Formats | PDF / Word / Txt / Markdown / HTML / Images / CSV / Excel / PPT / JSON |
+| Retrieval Strategies | BM25 sparse / Dense retrieval / GraphRAG / parent-child chunking / multi-dimensional indexing |
+| E2E Testing | Full-pipeline visualization with recall hit rate, BLEU / ROUGE metric evaluation |
 
-| Module | Support | Description |
-|---------|---------|------|
-| Document Formats | ✅ PDF / Word / Txt / Markdown / Images (with OCR / Caption) | Support for structured and unstructured documents with text extraction from images |
-| Embedding Models | ✅ Local models, BGE / GTE APIs, etc. | Customizable embedding models, compatible with local deployment and cloud vector generation APIs |
-| Vector DB Integration | ✅ PostgreSQL (pgvector), Elasticsearch | Support for mainstream vector index backends, flexible switching for different retrieval scenarios |
-| Retrieval Strategies | ✅ BM25 / Dense Retrieval / GraphRAG | Support for sparse/dense recall and knowledge graph-enhanced retrieval with customizable retrieve-rerank-generate pipelines |
-| LLM Integration | ✅ Support for Qwen, DeepSeek, etc., with thinking/non-thinking mode switching | Compatible with local models (e.g., via Ollama) or external API services with flexible inference configuration |
-| QA Capabilities | ✅ Context-aware, multi-turn dialogue, prompt templates | Support for complex semantic modeling, instruction control and chain-of-thought Q&A with configurable prompts and context windows |
-| E2E Testing | ✅ Retrieval+generation process visualization and metric evaluation | End-to-end testing tools for evaluating recall hit rates, answer coverage, BLEU/ROUGE and other metrics |
-| Deployment Modes | ✅ Support for local deployment / Docker images | Meets private, offline deployment and flexible operation requirements |
-| User Interfaces | ✅ Web UI + RESTful API | Interactive interface and standard API endpoints, suitable for both developers and business users |
+**Integrations & Extensions**
+
+| Capability | Details |
+|------------|---------|
+| LLMs | OpenAI / Azure OpenAI / Anthropic (Claude) / DeepSeek / Qwen (Alibaba Cloud) / Zhipu / Hunyuan / Doubao (Volcengine) / Gemini / MiniMax / NVIDIA / Novita AI / SiliconFlow / OpenRouter / Ollama |
+| Embeddings | Ollama / BGE / GTE / Zhipu / OpenAI-compatible APIs |
+| Vector DBs | PostgreSQL (pgvector) / Elasticsearch / Milvus / Weaviate / Qdrant / Apache Doris / Tencent VectorDB |
+| Object Storage | Local / MinIO / AWS S3 / Volcengine TOS / Alibaba Cloud OSS / Kingsoft Cloud KS3 / Huawei Cloud OBS |
+| IM Channels | WeCom / Feishu / Slack / Telegram / DingTalk / Mattermost / WeChat |
+| Web Search | DuckDuckGo / Bing / Google / Tavily / Baidu / Ollama / SearXNG |
+
+**Platform**
+
+| Capability | Details |
+|------------|---------|
+| Deployment | Local / Docker / Kubernetes (Helm) with private and offline support |
+| UI | Web UI / RESTful API / CLI (`weknora`) / Chrome Extension / WeChat Mini Program |
+| Access Control | Tenant RBAC with 4-tier role matrix (Owner / Admin / Contributor / Viewer), per-KB resource ownership, per-tenant audit log, invite-only workspaces, self-service tenant creation, cross-tenant superuser |
+| Security | AES-256-GCM at-rest encryption for API keys and MCP / data-source credentials with graceful key rotation; gRPC TLS + Token between app and docreader; SSRF-safe HTTP client; sandbox isolation for agent skills |
+| Observability | Integrated Langfuse for ReAct loops, token tracking, tool calls, and pipeline tracing |
+| Task Management | MQ async tasks, automatic database migration on version upgrade |
+| Model Management | Centralized config, per-knowledge-base model selection, multi-tenant built-in model sharing, WeKnora Cloud hosted models and parsing |
+
+## 🧩 Chrome Extension
+
+[**WeKnora Chrome Extension**](https://chromewebstore.google.com/detail/jpemjbopikggjlmikmclgbmkhhopjdgd) lets you capture web content directly into your WeKnora knowledge base. Select text, images, or entire pages in the browser and save them as knowledge entries with one click — no copy-paste or file upload needed.
+
+
+## 📱 WeChat Mini Program
+
+The [WeKnora Mini Program](./miniprogram/README.md) provides a lightweight mobile client for configuring WeKnora API access, selecting knowledge bases, importing URLs, and asking knowledge chat from WeChat.
+
+
+## 🦞 ClawHub Skill
+
+[**WeKnora ClawHub Skill**](https://clawhub.ai/lyingbug/weknora) is a WeKnora skill published on the ClawHub platform. Once installed, it enables document import (file / URL / Markdown), hybrid search (vector + keyword) across knowledge bases, and knowledge entry management — all through the WeKnora REST API.
+
+- **Document Import** — Upload files, import web pages, or write Markdown knowledge via the agent
+- **Hybrid Search** — Search within or across knowledge bases with vector + keyword retrieval
+- **Knowledge Management** — List, browse, edit, and delete knowledge entries programmatically
+
+## ⌨️ Command-Line Interface
+
+`weknora` is the official CLI for driving the API from a terminal or AI agent.
+The command surface mirrors `gh` CLI's `<noun> <verb>` convention; output is
+human-readable by default and switches to a stable JSON envelope with `--json`.
+
+```bash
+weknora auth login --host https://kb.example.com
+weknora kb list
+weknora link --kb my-knowledge-base    # bind the current directory
+weknora doc upload notes.md
+weknora chat "summarise the design doc"
+```
+
+See [`cli/README.md`](./cli/README.md) for install + 5-minute quickstart
+and [`cli/AGENTS.md`](./cli/AGENTS.md) for the operational contract that
+AI agents (Claude Code, Cursor, Aider, …) can rely on.
 
 ## 🚀 Getting Started
 
 ### 🛠 Prerequisites
 
-Make sure the following tools are installed on your system:
+- [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
+- [Git](https://git-scm.com/)
 
-* [Docker](https://www.docker.com/)
-* [Docker Compose](https://docs.docker.com/compose/)
-* [Git](https://git-scm.com/)
-
-### 📦 Installation
-
-#### ① Clone the repository
+### 📦 Installation & Launch
 
 ```bash
-# Clone the main repository
 git clone https://github.com/Tencent/WeKnora.git
 cd WeKnora
+cp .env.example .env   # Edit .env as needed, see comments in the file
+docker compose up -d   # Start core services
 ```
 
-#### ② Configure environment variables
+Once started, visit **http://localhost** to get started.
 
-```bash
-# Copy example env file
-cp .env.example .env
+> To use a local Ollama model, run `ollama serve > /dev/null 2>&1 &` first.
 
-# Edit .env and set required values
-# All variables are documented in the .env.example comments
-```
+### 🔧 Optional Services (Docker Compose Profiles)
 
-#### ③ Start the services
+Add `--profile` flags to enable additional components. Multiple profiles can be combined:
 
-```bash
-# Start all services (Ollama + backend containers)
-./scripts/start_all.sh
-# Or
-make start-all
-```
+| Profile | Description | Command |
+|---------|-------------|---------|
+| _(default)_ | Core services | `docker compose up -d` |
+| `full` | All features | `docker compose --profile full up -d` |
+| `neo4j` | Knowledge Graph (Neo4j) | `docker compose --profile neo4j up -d` |
+| `minio` | Object Storage (MinIO) | `docker compose --profile minio up -d` |
+| `langfuse` | Tracing (Langfuse) | `docker compose --profile langfuse up -d` |
 
-#### ③ Start the services (backup)
+Combine profiles: `docker compose --profile neo4j --profile minio up -d`
 
-```bash
-# Start ollama services (Optional)
-ollama serve > /dev/null 2>&1 &
+Stop services: `docker compose down`
 
-# Start the service
-docker compose up -d
-```
+### 🌐 Service URLs
 
-#### ④ Stop the services
+| Service | URL |
+|---------|-----|
+| Web UI | `http://localhost` |
+| Backend API | `http://localhost:8080` |
+| Langfuse Tracing | `http://localhost:3000` |
 
-```bash
-./scripts/start_all.sh --stop
-# Or
-make stop-all
-```
+## MCP Server
 
-### 🌐 Access Services
+Please refer to the [MCP Configuration Guide](./mcp-server/MCP_CONFIG.md) for the necessary setup.
 
-Once started, services will be available at:
-
-* Web UI: `http://localhost`
-* Backend API: `http://localhost:8080`
-* Jaeger Tracing: `http://localhost:16686`
-
-### 🔌 Using WeChat Dialog Open Platform
+## 🔌 Using WeChat Dialog Open Platform
 
 WeKnora serves as the core technology framework for the [WeChat Dialog Open Platform](https://chatbot.weixin.qq.com), providing a more convenient usage approach:
 
@@ -153,168 +234,76 @@ WeKnora serves as the core technology framework for the [WeChat Dialog Open Plat
 - **Efficient Question Management**: Support for categorized management of high-frequency questions, with rich data tools to ensure accurate, reliable, and easily maintainable answers
 - **WeChat Ecosystem Integration**: Through the WeChat Dialog Open Platform, WeKnora's intelligent Q&A capabilities can be seamlessly integrated into WeChat Official Accounts, Mini Programs, and other WeChat scenarios, enhancing user interaction experiences
 
-### 🔗 Access WeKnora via MCP Server
 
-#### 1️⃣ Clone the repository
-```
-git clone https://github.com/Tencent/WeKnora
-```
-
-#### 2️⃣ Configure MCP Server
-Configure the MCP client to connect to the server:
-```json
-{
-  "mcpServers": {
-    "weknora": {
-      "args": [
-        "path/to/WeKnora/mcp-server/run_server.py"
-      ],
-      "command": "python",
-      "env":{
-        "WEKNORA_API_KEY":"Enter your WeKnora instance, open developer tools, check the request header x-api-key starting with sk",
-        "WEKNORA_BASE_URL":"http(s)://your-weknora-address/api/v1"
-      }
-    }
-  }
-}
-```
-
-Run directly using stdio command:
-```
-pip install weknora-mcp-server
-python -m weknora-mcp-server
-```
-
-## 🔧 Initialization Configuration Guide
-
-To help users quickly configure various models and reduce trial-and-error costs, we've improved the original configuration file initialization method by adding a Web UI interface for model configuration. Before using, please ensure the code is updated to the latest version. The specific steps are as follows:
-If this is your first time using this project, you can skip steps ①② and go directly to steps ③④.
-
-### ① Stop the services
-
-```bash
-./scripts/start_all.sh --stop
-```
-
-### ② Clear existing data tables (recommended when no important data exists)
-
-```bash
-make clean-db
-```
-
-### ③ Compile and start services
-
-```bash
-./scripts/start_all.sh
-```
-
-### ④ Access Web UI
-
-http://localhost
-
-On first access, it will automatically redirect to the initialization configuration page. After configuration is complete, it will automatically redirect to the knowledge base page. Please follow the page instructions to complete model configuration.
-
-![Configuration Page](./docs/images/config.png)
-
-## 📱 Interface Showcase
-
-### Web UI Interface
-
-<table>
-  <tr>
-    <td><b>Knowledge Upload</b><br/><img src="./docs/images/knowledges.png" alt="Knowledge Upload Interface"></td>
-    <td><b>Q&A Entry</b><br/><img src="./docs/images/qa.png" alt="Q&A Entry Interface"></td>
-  </tr>
-  <tr>
-    <td colspan="2"><b>Rich Text & Image Responses</b><br/><img src="./docs/images/answer.png" alt="Rich Answer Interface"></td>
-  </tr>
-</table>
-
-**Knowledge Base Management:** Support for dragging and dropping various documents, automatically identifying document structures and extracting core knowledge to establish indexes. The system clearly displays processing progress and document status, achieving efficient knowledge base management.
-
-### Document Knowledge Graph
-
-<table>
-  <tr>
-    <td><img src="./docs/images/graph2.png" alt="Knowledge Graph View 1"></td>
-    <td><img src="./docs/images/graph1.png" alt="Knowledge Graph View 2"></td>
-  </tr>
-</table>
-
-WeKnora supports transforming documents into knowledge graphs, displaying the relationships between different sections of the documents. Once the knowledge graph feature is enabled, the system analyzes and constructs an internal semantic association network that not only helps users understand document content but also provides structured support for indexing and retrieval, enhancing the relevance and breadth of search results.
-
-### MCP Server Integration Effects
-<img width="950" height="2063" alt="MCP Server Integration Demo" src="https://github.com/user-attachments/assets/09111ec8-0489-415c-969d-aa3835778e14" />
 
 ## 📘 API Reference
 
 Troubleshooting FAQ: [Troubleshooting FAQ](./docs/QA.md)
 
-Detailed API documentation is available at: [API Docs](./docs/API.md)
+Detailed API documentation is available at: [API Docs](./docs/api/README.md)
+
+Product plans and upcoming features: [Roadmap](./docs/ROADMAP.md)
 
 ## 🧭 Developer Guide
 
-### 📁 Directory Structure
+### ⚡ Fast Development Mode (Recommended)
 
-```
-WeKnora/
-├── cmd/         # Main entry point
-├── internal/    # Core business logic
-├── config/      # Configuration files
-├── migrations/  # DB migration scripts
-├── scripts/     # Shell scripts
-├── services/    # Microservice logic
-├── frontend/    # Frontend app
-└── docs/        # Project documentation
-```
-
-### 🔧 Common Commands
+If you need to frequently modify code, **you don't need to rebuild Docker images every time**! Use fast development mode:
 
 ```bash
-# Wipe all data from DB (use with caution)
-make clean-db
+# Start infrastructure
+make dev-start
+
+# Start backend (new terminal)
+make dev-app
+
+# Start frontend (new terminal)
+make dev-frontend
 ```
+
+**Development Advantages:**
+- ✅ Frontend modifications auto hot-reload (no restart needed)
+- ✅ Backend modifications quick restart (5-10 seconds, supports Air hot-reload)
+- ✅ No need to rebuild Docker images
+- ✅ Support IDE breakpoint debugging
+
+**Detailed Documentation:** [Development Environment Quick Start](./docs/开发指南.md)
+
 
 ## 🤝 Contributing
 
-We welcome community contributions! For suggestions, bugs, or feature requests, please submit an [Issue](https://github.com/Tencent/WeKnora/issues) or directly create a Pull Request.
+Welcome to submit [Issues](https://github.com/Tencent/WeKnora/issues) or Pull Requests.
 
-### 🎯 How to Contribute
+**Process:** Fork → Create branch → Commit changes → Open PR
 
-- 🐛 **Bug Fixes**: Discover and fix system defects
-- ✨ **New Features**: Propose and implement new capabilities
-- 📚 **Documentation**: Improve project documentation
-- 🧪 **Test Cases**: Write unit and integration tests
-- 🎨 **UI/UX Enhancements**: Improve user interface and experience
+**Standards:** Format code with `gofmt`, follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` / `fix:` / `docs:` / `test:` / `refactor:`)
 
-### 📋 Contribution Process
+## 🔒 Security Notice
 
-1. **Fork the project** to your GitHub account
-2. **Create a feature branch** `git checkout -b feature/amazing-feature`
-3. **Commit changes** `git commit -m 'Add amazing feature'`
-4. **Push branch** `git push origin feature/amazing-feature`
-5. **Create a Pull Request** with detailed description of changes
+**Important:** Starting from v0.1.3, WeKnora includes login authentication functionality to enhance system security. For production deployments, we strongly recommend:
 
-### 🎨 Code Standards
+- Deploy WeKnora services in internal/private network environments rather than public internet
+- Avoid exposing the service directly to public networks to prevent potential information leakage
+- Configure proper firewall rules and access controls for your deployment environment
+- Regularly update to the latest version for security patches and improvements
 
-- Follow [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
-- Format code using `gofmt`
-- Add necessary unit tests
-- Update relevant documentation
+## 👥 Contributors
 
-### 📝 Commit Guidelines
+Thanks to these excellent contributors:
 
-Use [Conventional Commits](https://www.conventionalcommits.org/) standard:
-
-```
-feat: Add document batch upload functionality
-fix: Resolve vector retrieval precision issue
-docs: Update API documentation
-test: Add retrieval engine test cases
-refactor: Restructure document parsing module
-```
+[![Contributors](https://contrib.rocks/image?repo=Tencent/WeKnora)](https://github.com/Tencent/WeKnora/graphs/contributors)
 
 ## 📄 License
 
 This project is licensed under the [MIT License](./LICENSE).
 You are free to use, modify, and distribute the code with proper attribution.
+
+## 📈 Project Statistics
+
+<a href="https://www.star-history.com/#Tencent/WeKnora&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Tencent/WeKnora&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Tencent/WeKnora&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Tencent/WeKnora&type=date&legend=top-left" />
+ </picture>
+</a>
